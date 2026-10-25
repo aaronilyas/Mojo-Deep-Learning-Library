@@ -15,6 +15,7 @@ from accounting import (
 )
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
+from ops_reduce import sum_dim, sum_backward
 
 
 @export
@@ -68,6 +69,14 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[clone](
             "clone",
             docstring="Deep-copy a tensor for owned leaf .grad buffers.",
+        )
+        m.def_function[sum_dim](
+            "sum_dim",
+            docstring="Sum over all elements or one axis; Reference / Meta.",
+        )
+        m.def_function[sum_backward](
+            "sum_backward",
+            docstring="Broadcast sum upstream gradient to the input shape.",
         )
 
         var mod = m.finalize()

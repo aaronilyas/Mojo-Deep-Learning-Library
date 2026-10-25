@@ -27,10 +27,15 @@ class AutogradError(RuntimeError):
     """Raised when autograd cannot proceed (e.g. saved tensors already freed)."""
 
 
+class AxisError(ShapeError, IndexError):
+    """Raised when a reduction dim is out of range for the tensor's rank."""
+
+
 # Mojo raises Error with a stable type tag in the message; map tags here so
 # later ops (budget errors, etc.) share one remapping path. Tag prefixes are
 # stripped so public exception messages stay clean.
 _MOJO_ERROR_TAGS: tuple[tuple[str, type[Exception]], ...] = (
+    ("mojodl.AxisError:", AxisError),
     ("mojodl.ShapeError:", ShapeError),
     ("mojodl.DeviceError:", DeviceError),
     ("OverflowError:", OverflowError),
@@ -74,6 +79,7 @@ class _Float32Dtype:
 
 
 float32 = _Float32Dtype()
+
 
 _DEVICE_CPU = 0
 _DEVICE_META = 1
@@ -247,12 +253,29 @@ class Tensor:
     def __rmul__(self, other):
         return NotImplemented
 
-    def sum(self):
-        """Reduce all elements to a scalar tensor (shape ())."""
+    def sum(self, dim=None, keepdim=False):
+        """Reduce all elements, or along one axis, to a tensor.
+
+        ``dim`` is ``None`` (all axes) or a single int (negative counts from
+        the end; a 0-d tensor accepts 0 and -1). ``keepdim`` keeps reduced
+        axes as size 1. Bool / non-int ``dim`` raises ``TypeError``.
+        """
         from . import autograd
 
-        result = Tensor._from_core(_call_engine(_engine.sum, self._core))
-        return autograd.record_sum(result, self)
+        if dim is not None:
+            if isinstance(dim, bool) or not isinstance(dim, int):
+                raise TypeError(
+                    f"sum(): dim must be an int or None, got {type(dim).__name__}"
+                )
+        has_dim = 0 if dim is None else 1
+        dim_arg = 0 if dim is None else dim
+        keepdim_arg = 1 if keepdim else 0
+        result = Tensor._from_core(
+            _call_engine(
+                _engine.sum_dim, self._core, dim_arg, has_dim, keepdim_arg
+            )
+        )
+        return autograd.record_sum(result, self, dim=dim, keepdim=bool(keepdim))
 
     def backward(self, retain_graph: bool = False) -> None:
         """Compute gradients of this tensor w.r.t. leaves that require grad.
@@ -289,6 +312,7 @@ __all__ = [
     "ShapeError",
     "DeviceError",
     "AutogradError",
+    "AxisError",
     "memory_stats",
     "reset_peak_memory_stats",
     "no_grad",
