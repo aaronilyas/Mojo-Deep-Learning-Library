@@ -6,7 +6,14 @@ Backward expands the upstream gradient along reduced dimensions.
 
 from std.python import PythonObject
 from tensor_core import Tensor, _row_major_strides, _nbytes_for_shape
-from ops import _alloc_fp32_out, _make_meta_result, _make_cpu_result, _parse_shape
+from ops import (
+    _alloc_fp32_out,
+    _make_meta_result,
+    _make_cpu_result,
+    _parse_shape,
+    _shapes_equal,
+    _raise_shape_error,
+)
 
 
 def _raise_axis_error(dim: Int, rank: Int) raises:
@@ -157,7 +164,8 @@ def sum_backward(
     Shared by whole-tensor and one-axis sum backward (including keepdim and
     dim=None). Meta returns a Meta tensor of `input_shape` with no allocation;
     cpu allocates through accounting and copies each grad value along the
-    reduced axis (or all axes when has_dim is false).
+    reduced axis (or all axes when has_dim is false). Grad shape must equal
+    `_sum_out_shape` or a ShapeError is raised before any allocation.
     """
     var g = grad_obj.downcast_value_ptr[Tensor]()
     var device_code = g[].device_code
@@ -167,18 +175,15 @@ def sum_backward(
 
     var out_shape = _parse_shape(input_shape_obj)
     # Re-validate dim against the input rank so Meta and cpu agree on errors.
-    var _expected = _sum_out_shape(out_shape, has_dim, dim, keepdim)
-    _ = _expected
+    var expected = _sum_out_shape(out_shape, has_dim, dim, keepdim)
+    if not _shapes_equal(g[].shape, expected):
+        _raise_shape_error(g[].shape, expected)
 
     var out_strides = _row_major_strides(out_shape)
     var nbytes = _nbytes_for_shape(out_shape)
 
     if device_code == 1:  # meta
         return _make_meta_result(out_shape^, out_strides^)
-
-    var norm_dim = 0
-    if has_dim:
-        norm_dim = _normalize_dim(dim, len(out_shape))
 
     var data = _alloc_fp32_out(nbytes)
     if nbytes >= 1:
@@ -190,46 +195,23 @@ def sum_backward(
         else:
             var g_f = g[].data.value().unsafe_bitcast[Float32]()
             var rank = len(out_shape)
-            # Row-major decode of each output linear index into coords, then
-            # map to a grad linear index (reduced axes read as 0 / omitted).
-            for lin in range(n_out):
-                var rem = lin
-                var coords = List[Int](capacity=rank)
-                for _i in range(rank):
-                    coords.append(0)
-                var ax = rank - 1
-                while ax >= 0:
-                    var sz = out_shape[ax]
-                    if sz > 0:
-                        coords[ax] = rem % sz
-                        rem = rem // sz
-                    else:
-                        coords[ax] = 0
-                    ax = ax - 1
-
-                var g_idx: Int
-                if not has_dim:
-                    g_idx = 0
-                elif keepdim:
-                    var gk = 0
-                    for i in range(rank):
-                        var c = coords[i]
-                        if i == norm_dim:
-                            c = 0
-                        # grad shape is out_shape with size 1 at norm_dim
-                        var gdim = out_shape[i]
-                        if i == norm_dim:
-                            gdim = 1
-                        gk = gk * gdim + c
-                    g_idx = gk
-                else:
-                    var gr = 0
-                    for i in range(rank):
-                        if i == norm_dim:
-                            continue
-                        gr = gr * out_shape[i] + coords[i]
-                    g_idx = gr
-
-                o_f[unsafe_offset=lin] = g_f[unsafe_offset=g_idx]
+            # Whole-tensor or 0-d: broadcast the single grad value everywhere.
+            if (not has_dim) or rank == 0:
+                var g_val = g_f[unsafe_offset=0]
+                for i in range(n_out):
+                    o_f[unsafe_offset=i] = g_val
+            else:
+                # Contiguous row-major: keepdim and non-keepdim grads share
+                # layout, so grad index = o * inner + i (mirrors sum_dim).
+                var d = _normalize_dim(dim, rank)
+                var outer = _product_range(out_shape, 0, d)
+                var reduced = out_shape[d]
+                var inner = _product_range(out_shape, d + 1, rank)
+                for o in range(outer):
+                    for i in range(inner):
+                        var g_val = g_f[unsafe_offset=o * inner + i]
+                        for r in range(reduced):
+                            var out_idx = (o * reduced + r) * inner + i
+                            o_f[unsafe_offset=out_idx] = g_val
 
     return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
