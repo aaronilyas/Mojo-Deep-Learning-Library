@@ -1,0 +1,21 @@
+[workspace]
+channels = ["https://conda.modular.com/max", "conda-forge"]
+name = "Mojo-Deep-Learning-Library"
+platforms = ["linux-64", "osx-arm64"]
+version = "0.1.0"
+
+[dependencies]
+mojo = "==1.2.0"
+python = "3.14.*"
+numpy = "*"
+
+[feature.test.dependencies]
+pytest = "*"
+pytorch-cpu = "*"
+
+[environments]
+default = ["test"]
+
+[tasks]
+build = "mojo build mojodl/_engine.mojo --emit shared-lib -o mojodl/_engine.so"
+test = { cmd = "python -m pytest tests", depends-on = ["build"] }

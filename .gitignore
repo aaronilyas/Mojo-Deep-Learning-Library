@@ -1,0 +1,11 @@
+# pixi environments
+.pixi/
+
+# Python
+__pycache__/
+.pytest_cache/
+
+# Mojo / extension build artifacts
+*.so
+*.dylib
+__mojocache__/
