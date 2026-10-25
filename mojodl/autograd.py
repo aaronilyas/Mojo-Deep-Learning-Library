@@ -19,6 +19,12 @@ if TYPE_CHECKING:
 _DEVICE_CPU = 0
 _DEVICE_META = 1
 
+_FREED_SAVED_MSG = (
+    "Trying to backward through the graph a second time "
+    "(or directly access saved tensors after they have already been freed). "
+    "Specify retain_graph=True if you need to backward through the graph a second time."
+)
+
 
 def _device_code(device: str) -> int:
     if device == "meta":
@@ -39,11 +45,45 @@ def _wrap(core) -> Tensor:
     return Tensor._from_core(core)
 
 
+def _raise_freed_saved() -> None:
+    from . import AutogradError
+
+    raise AutogradError(_FREED_SAVED_MSG)
+
+
 class Node:
-    """Base class for backward graph nodes."""
+    """Base class for backward graph nodes.
+
+    Ops that need activations for their backward formula call
+    ``save_for_backward``; ``backward(retain_graph=False)`` then releases
+    those references after the traversal. Subclasses that never save get
+    release and the double-backward error for free (no-ops / no raise).
+    """
 
     # Subclasses set next_functions to a tuple of upstream Node | None.
     next_functions: tuple
+
+    def save_for_backward(self, *tensors: Tensor | None) -> None:
+        """Keep tensors alive for ``apply``; cleared on release unless retained."""
+        self._saved_tensors = tensors
+        self._saved_released = False
+
+    def saved_tensors(self) -> tuple:
+        """Return tensors from ``save_for_backward``, or raise if released."""
+        if getattr(self, "_saved_released", False):
+            _raise_freed_saved()
+        return getattr(self, "_saved_tensors", ())
+
+    def release_saved_tensors(self) -> None:
+        """Drop saved-tensor references so storage can be freed by refcounting."""
+        if getattr(self, "_saved_tensors", None) is not None:
+            self._saved_tensors = None
+            self._saved_released = True
+
+    def ensure_saved_available(self) -> None:
+        """Raise AutogradError if this node saved tensors that were already freed."""
+        if getattr(self, "_saved_released", False):
+            _raise_freed_saved()
 
     def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
         """Consume grad_output; return (next_node, grad_input) pairs to route."""
@@ -124,7 +164,7 @@ class MulBackward(Node):
     tensor itself, not a copy).
     """
 
-    __slots__ = ("next_functions", "saved_a", "saved_b")
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
 
     def __init__(
         self,
@@ -135,22 +175,25 @@ class MulBackward(Node):
     ):
         self.next_functions = (next_a, next_b)
         # grad_b needs a; grad_a needs b — save only what apply will use.
-        self.saved_a = a if next_b is not None else None
-        self.saved_b = b if next_a is not None else None
+        self.save_for_backward(
+            a if next_b is not None else None,
+            b if next_a is not None else None,
+        )
 
     def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
         from . import _engine
 
+        saved_a, saved_b = self.saved_tensors()
         out: list[tuple[Node, Tensor]] = []
         next_a, next_b = self.next_functions
         if next_a is not None:
             grad_a = _wrap(
-                _call_engine(_engine.mul, grad_output._core, self.saved_b._core)
+                _call_engine(_engine.mul, grad_output._core, saved_b._core)
             )
             out.append((next_a, grad_a))
         if next_b is not None:
             grad_b = _wrap(
-                _call_engine(_engine.mul, grad_output._core, self.saved_a._core)
+                _call_engine(_engine.mul, grad_output._core, saved_a._core)
             )
             out.append((next_b, grad_b))
         return out
@@ -220,12 +263,17 @@ def _ones_like_seed(tensor: Tensor) -> Tensor:
     )
 
 
-def backward(tensor: Tensor) -> None:
+def backward(tensor: Tensor, retain_graph: bool = False) -> None:
     """Run reverse-mode AD from `tensor` (assumes a 1-element output for now).
 
     Visits nodes in reverse topological order. Each node's incoming gradients
     are fully accumulated before its `apply` runs, so a tensor used more than
     once receives the summed gradient.
+
+    When ``retain_graph`` is False, every reachable node releases tensors it
+    saved for backward after the traversal. A later backward that reaches a
+    released node raises ``AutogradError`` during graph discovery, before any
+    leaf ``.grad`` is modified.
     """
     root = tensor.grad_fn
     if root is None:
@@ -238,13 +286,16 @@ def backward(tensor: Tensor) -> None:
         return
 
     # Count how many times each reachable node appears as a next_function so
-    # we know when its incoming gradient is complete.
+    # we know when its incoming gradient is complete. Also check that no
+    # node's saved tensors were already released (before any apply / accumulate).
     expected: dict[int, int] = defaultdict(int)
     expected[id(root)] = 1
     seen: set[int] = {id(root)}
+    reachable: list[Node] = [root]
     stack: list[Node] = [root]
     while stack:
         node = stack.pop()
+        node.ensure_saved_available()
         for nxt in node.next_functions:
             if nxt is None:
                 continue
@@ -253,6 +304,7 @@ def backward(tensor: Tensor) -> None:
             if nid not in seen:
                 seen.add(nid)
                 stack.append(nxt)
+                reachable.append(nxt)
 
     # Accumulated incoming gradient per node; pending arrivals remaining.
     from . import _engine
@@ -280,3 +332,7 @@ def backward(tensor: Tensor) -> None:
             pending[mid] -= 1
             if pending[mid] == 0:
                 ready.append(next_node)
+
+    if not retain_graph:
+        for node in reachable:
+            node.release_saved_tensors()

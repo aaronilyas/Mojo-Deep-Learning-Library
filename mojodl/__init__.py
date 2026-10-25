@@ -23,6 +23,10 @@ class DeviceError(ValueError):
     """Raised when an operation mixes devices or needs data a device lacks."""
 
 
+class AutogradError(RuntimeError):
+    """Raised when autograd cannot proceed (e.g. saved tensors already freed)."""
+
+
 # Mojo raises Error with a stable type tag in the message; map tags here so
 # later ops (budget errors, etc.) share one remapping path. Tag prefixes are
 # stripped so public exception messages stay clean.
@@ -232,14 +236,17 @@ class Tensor:
         result = Tensor._from_core(_call_engine(_engine.sum, self._core))
         return autograd.record_sum(result, self)
 
-    def backward(self) -> None:
+    def backward(self, retain_graph: bool = False) -> None:
         """Compute gradients of this tensor w.r.t. leaves that require grad.
 
         Assumes a 1-element output for now (non-scalar error is a later slice).
+        When ``retain_graph`` is False (default), nodes free tensors saved for
+        backward after the traversal; a second backward through those nodes
+        raises ``AutogradError``. Pass ``retain_graph=True`` to keep them.
         """
         from . import autograd
 
-        autograd.backward(self)
+        autograd.backward(self, retain_graph=retain_graph)
 
 
 __all__ = [
@@ -248,6 +255,7 @@ __all__ = [
     "empty",
     "ShapeError",
     "DeviceError",
+    "AutogradError",
     "memory_stats",
     "reset_peak_memory_stats",
 ]
