@@ -15,6 +15,7 @@ from accounting import (
 )
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
+from ops_elementwise import broadcast_add, reduce_to_shape
 
 
 @export
@@ -68,6 +69,14 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[clone](
             "clone",
             docstring="Deep-copy a tensor for owned leaf .grad buffers.",
+        )
+        m.def_function[broadcast_add](
+            "broadcast_add",
+            docstring="Broadcasting elementwise add Reference kernel / Meta version.",
+        )
+        m.def_function[reduce_to_shape](
+            "reduce_to_shape",
+            docstring="Reduce a gradient to a target shape (broadcasting backward).",
         )
 
         var mod = m.finalize()

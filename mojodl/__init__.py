@@ -227,7 +227,7 @@ class Tensor:
         from . import autograd
 
         result = Tensor._from_core(
-            _call_engine(_engine.add, self._core, other._core)
+            _call_engine(_engine.broadcast_add, self._core, other._core)
         )
         return autograd.record_add(result, self, other)
 
