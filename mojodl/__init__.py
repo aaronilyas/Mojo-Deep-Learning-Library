@@ -79,7 +79,7 @@ _DEVICE_CPU = 0
 _DEVICE_META = 1
 
 
-def empty(shape, dtype=float32, device="cpu"):
+def empty(shape, dtype=float32, device="cpu", requires_grad=False):
     """Create an uninitialized cpu tensor or a Meta tensor (shape + dtype only).
 
     Parameters
@@ -91,6 +91,9 @@ def empty(shape, dtype=float32, device="cpu"):
     device:
         `"cpu"` (default) allocates storage through accounting; `"meta"`
         allocates nothing.
+    requires_grad:
+        If True, the result is a leaf that tracks ops for `.backward()`
+        (PyTorch semantics). Default False.
     """
     if dtype is not float32 and dtype != float32:
         raise TypeError(
@@ -119,7 +122,9 @@ def empty(shape, dtype=float32, device="cpu"):
                 f"empty(): shape[{i}] must be non-negative, got {d}"
             )
         dims.append(d)
-    return Tensor._from_core(_call_engine(_engine.empty, tuple(dims), device_code))
+    t = Tensor._from_core(_call_engine(_engine.empty, tuple(dims), device_code))
+    t._requires_grad = bool(requires_grad)
+    return t
 
 
 class Tensor:
