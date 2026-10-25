@@ -267,6 +267,13 @@ class Tensor:
         result = Tensor._from_core(_call_engine(_engine.sum, self._core))
         return autograd.record_sum(result, self)
 
+    def relu(self):
+        """Elementwise ReLU: max(0, x)."""
+        from . import autograd
+
+        result = Tensor._from_core(_call_engine(_engine.relu, self._core))
+        return autograd.record_relu(result, self)
+
     def backward(self, retain_graph: bool = False) -> None:
         """Compute gradients of this tensor w.r.t. leaves that require grad.
 
@@ -295,6 +302,11 @@ def is_grad_enabled() -> bool:
     return autograd.is_grad_enabled()
 
 
+def relu(x: Tensor) -> Tensor:
+    """Elementwise ReLU: max(0, x). Equivalent to ``x.relu()``."""
+    return x.relu()
+
+
 __all__ = [
     "Tensor",
     "float32",
@@ -306,4 +318,5 @@ __all__ = [
     "reset_peak_memory_stats",
     "no_grad",
     "is_grad_enabled",
+    "relu",
 ]
