@@ -1,8 +1,8 @@
 """Python extension module for the Mojo engine.
 
 Exposes answer() (smoke test) and the Tensor type that owns fp32 storage,
-shape, and strides. Element storage is allocated and freed only inside
-Tensor, through the accounting layer.
+shape, strides, and device. Element storage is allocated and freed only
+inside Tensor, through the accounting layer. Meta tensors hold no storage.
 """
 
 from std.python import PythonObject, Python
@@ -13,7 +13,7 @@ from accounting import (
     memory_stats,
     reset_peak_memory_stats,
 )
-from tensor_core import Tensor
+from tensor_core import Tensor, empty
 from ops import add
 
 
@@ -26,6 +26,7 @@ def PyInit__engine() abi("C") -> PythonObject:
             m.add_type[Tensor]("Tensor")
             .def_py_init[Tensor.py_init]()
             .def_method[Tensor.shape_tuple]("shape")
+            .def_method[Tensor.device_str]("device")
             .def_method[Tensor.copy_to]("copy_to")
         )
         m.def_function[answer]("answer", docstring="Return the answer to everything.")
@@ -37,9 +38,13 @@ def PyInit__engine() abi("C") -> PythonObject:
             "reset_peak_memory_stats",
             docstring="Set peak tensor memory equal to the current live count.",
         )
+        m.def_function[empty](
+            "empty",
+            docstring="Create an uninitialized cpu Tensor or a Meta tensor.",
+        )
         m.def_function[add](
             "add",
-            docstring="Same-shape elementwise add Reference kernel.",
+            docstring="Same-shape elementwise add Reference kernel / Meta version.",
         )
         var mod = m.finalize()
         var acct = Accounting(0, 0)

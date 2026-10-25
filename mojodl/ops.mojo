@@ -1,13 +1,16 @@
 """Reference kernels for tensor operations.
 
 Plain, readable CPU implementations used as ground truth. Shape checks and
-allocation happen here so Python only remaps tagged Mojo errors.
+allocation happen here so Python only remaps tagged Mojo errors. Every op
+ships a Reference kernel and a Meta version that share output-shape logic.
 """
 
 from std.memory import Pointer
 from std.python import PythonObject
 from accounting import accounted_alloc
 from tensor_core import Tensor, _row_major_strides
+
+# device_code values match tensor_core: 0 = cpu, 1 = meta
 
 
 def _format_shape(shape: List[Int]) -> String:
@@ -43,24 +46,66 @@ def _raise_shape_error(a: List[Int], b: List[Int]) raises:
     )
 
 
-def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
-    """Same-shape elementwise add Reference kernel.
+def _device_name(code: Int) -> String:
+    if code == 1:
+        return "meta"
+    return "cpu"
 
-    Allocates the output through the accounting layer. Raises a tagged
-    ShapeError when shapes differ. Returns a new engine Tensor.
+
+def _raise_device_error(a_code: Int, b_code: Int) raises:
+    """Raise a tagged Error that the Python veneer maps to mojodl.DeviceError."""
+    raise Error(
+        "mojodl.DeviceError: cannot add tensors on devices '"
+        + _device_name(a_code)
+        + "' and '"
+        + _device_name(b_code)
+        + "'"
+    )
+
+
+def _checked_out_shape(a: List[Int], b: List[Int]) raises -> List[Int]:
+    """Shared shape check and output-shape for Reference and Meta add.
+
+    Raises ShapeError when shapes differ; otherwise returns a copy of `a`.
+    """
+    if not _shapes_equal(a, b):
+        _raise_shape_error(a, b)
+    var out_shape = List[Int](capacity=len(a))
+    for i in range(len(a)):
+        out_shape.append(a[i])
+    return out_shape^
+
+
+def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
+    """Same-shape elementwise add: Reference kernel or Meta version.
+
+    Devices must match. Output shape comes from `_checked_out_shape` so the
+    Reference and Meta paths cannot diverge. Meta returns a Meta tensor with
+    no allocation; cpu allocates through accounting.
     """
     var a = a_obj.downcast_value_ptr[Tensor]()
     var b = b_obj.downcast_value_ptr[Tensor]()
 
-    if not _shapes_equal(a[].shape, b[].shape):
-        _raise_shape_error(a[].shape, b[].shape)
+    var a_dev = a[].device_code
+    var b_dev = b[].device_code
+    if a_dev != b_dev:
+        _raise_device_error(a_dev, b_dev)
 
-    var nbytes = a[].nbytes
-    var out_shape = List[Int](capacity=len(a[].shape))
-    for i in range(len(a[].shape)):
-        out_shape.append(a[].shape[i])
+    var out_shape = _checked_out_shape(a[].shape, b[].shape)
     var out_strides = _row_major_strides(out_shape)
 
+    if a_dev == 1:  # meta
+        var meta_result = Tensor(
+            None,
+            0,
+            out_shape^,
+            out_strides^,
+            0,
+            1,
+        )
+        return PythonObject(alloc=meta_result^)
+
+    var nbytes = a[].nbytes
     var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     if nbytes < 1:
         data = None
@@ -79,5 +124,6 @@ def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
         out_shape^,
         out_strides^,
         0,
+        0,  # cpu
     )
     return PythonObject(alloc=result^)

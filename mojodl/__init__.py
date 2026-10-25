@@ -20,10 +20,15 @@ class ShapeError(ValueError):
     """Raised when tensor shapes are incompatible for an operation."""
 
 
+class DeviceError(ValueError):
+    """Raised when an operation mixes devices or needs data a device lacks."""
+
+
 # Mojo raises Error with a stable type tag in the message; map tags here so
 # later ops (budget errors, etc.) share one remapping path.
 _MOJO_ERROR_TAGS: tuple[tuple[str, type[Exception]], ...] = (
     ("mojodl.ShapeError:", ShapeError),
+    ("mojodl.DeviceError:", DeviceError),
 )
 
 
@@ -63,6 +68,52 @@ class _Float32Dtype:
 
 float32 = _Float32Dtype()
 
+_DEVICE_CPU = 0
+_DEVICE_META = 1
+
+
+def empty(shape, dtype=float32, device="cpu"):
+    """Create an uninitialized cpu tensor or a Meta tensor (shape + dtype only).
+
+    Parameters
+    ----------
+    shape:
+        Tuple or list of non-negative ints.
+    dtype:
+        Only `mojodl.float32` is accepted.
+    device:
+        `"cpu"` (default) allocates storage through accounting; `"meta"`
+        allocates nothing.
+    """
+    if dtype is not float32 and dtype != float32:
+        raise TypeError(
+            f"empty(): only mojodl.float32 is supported, got {dtype!r}"
+        )
+    if device == "cpu":
+        device_code = _DEVICE_CPU
+    elif device == "meta":
+        device_code = _DEVICE_META
+    else:
+        raise ValueError(
+            f"empty(): unknown device {device!r}; expected 'cpu' or 'meta'"
+        )
+    if not isinstance(shape, (tuple, list)):
+        raise TypeError(
+            f"empty(): shape must be a tuple or list of ints, got {type(shape).__name__}"
+        )
+    dims = []
+    for i, d in enumerate(shape):
+        if isinstance(d, bool) or not isinstance(d, int):
+            raise TypeError(
+                f"empty(): shape[{i}] must be an int, got {type(d).__name__}"
+            )
+        if d < 0:
+            raise ValueError(
+                f"empty(): shape[{i}] must be non-negative, got {d}"
+            )
+        dims.append(d)
+    return Tensor._from_core(_call_engine(_engine.empty, tuple(dims), device_code))
+
 
 class Tensor:
     """Eager fp32 tensor whose element storage lives in the Mojo engine.
@@ -70,6 +121,7 @@ class Tensor:
     Construction accepts a nested list or any numeric NumPy array. Values are
     converted to float32 on the Python side, then copied into engine storage.
     `.numpy()` returns a fresh copy; mutating it does not affect the tensor.
+    Meta tensors (device `"meta"`) hold shape and dtype only.
     """
 
     __slots__ = ("_core",)
@@ -98,7 +150,15 @@ class Tensor:
     def dtype(self):
         return float32
 
+    @property
+    def device(self) -> str:
+        return self._core.device()
+
     def numpy(self) -> np.ndarray:
+        if self.device == "meta":
+            raise DeviceError(
+                "cannot call .numpy() on a Meta tensor (device 'meta' has no storage)"
+            )
         out = np.empty(self.shape, dtype=np.float32)
         self._core.copy_to(out)
         return out
@@ -117,7 +177,9 @@ __all__ = [
     "_engine",
     "Tensor",
     "float32",
+    "empty",
     "ShapeError",
+    "DeviceError",
     "memory_stats",
     "reset_peak_memory_stats",
 ]

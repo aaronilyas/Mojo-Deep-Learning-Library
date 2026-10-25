@@ -1,8 +1,9 @@
 """Contiguous fp32 tensor storage owned by the Mojo engine.
 
-`Tensor` owns the storage pointer, byte size, shape, row-major strides, and
-dtype. Allocation and free go through the accounting layer. Python holds only
-a reference to this engine object; addresses and byte counts never cross the
+`Tensor` owns the storage pointer, byte size, shape, row-major strides,
+dtype, and device. Allocation and free go through the accounting layer.
+Meta tensors carry shape and dtype only (no storage). Python holds only a
+reference to this engine object; addresses and byte counts never cross the
 boundary.
 """
 
@@ -10,6 +11,8 @@ from std.memory import Pointer, unsafe_memcpy
 from std.format import Writable, Writer
 from std.python import PythonObject, Python
 from accounting import accounted_alloc, accounted_free
+
+# device_code values: 0 = cpu, 1 = meta
 
 
 def _row_major_strides(shape: List[Int]) -> List[Int]:
@@ -28,9 +31,17 @@ def _row_major_strides(shape: List[Int]) -> List[Int]:
     return strides^
 
 
+def _nelem(shape: List[Int]) -> Int:
+    """Number of elements in a dense shape (0-d is 1 element)."""
+    var n = 1
+    for i in range(len(shape)):
+        n *= shape[i]
+    return n
+
+
 @fieldwise_init
 struct Tensor(Movable, Writable):
-    """Eager fp32 tensor whose element storage lives in the Mojo engine."""
+    """Eager fp32 tensor; Meta tensors hold shape/dtype only."""
 
     var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     var nbytes: Int
@@ -38,16 +49,28 @@ struct Tensor(Movable, Writable):
     var strides: List[Int]
     # 0 = float32; only dtype supported in this milestone.
     var dtype_code: Int
+    # 0 = cpu (has storage when nbytes > 0); 1 = meta (never has storage).
+    var device_code: Int
 
     def __deinit__(deinit self):
         # Free storage exactly once when the Python wrapper is collected.
-        # Destructors must not raise; accounted_free is non-raising.
+        # Meta tensors never allocate; destructors must not raise.
+        if self.device_code == 1:  # meta: never allocated
+            return
         if self.nbytes < 1:
             return
         accounted_free(self.data.value(), self.nbytes)
 
     def write_to(self, mut writer: Some[Writer]):
-        writer.write("Tensor(nbytes=", self.nbytes, ", ndim=", len(self.shape), ")")
+        writer.write(
+            "Tensor(nbytes=",
+            self.nbytes,
+            ", ndim=",
+            len(self.shape),
+            ", device=",
+            self.device_code,
+            ")",
+        )
 
     @staticmethod
     def py_init(
@@ -82,6 +105,7 @@ struct Tensor(Movable, Writable):
             shape^,
             strides^,
             0,
+            0,  # cpu
         )
 
     @staticmethod
@@ -96,13 +120,63 @@ struct Tensor(Movable, Writable):
         return builtins.tuple(items)
 
     @staticmethod
+    def device_str(
+        self_ptr: Pointer[Self, MutAnyOrigin],
+    ) raises -> PythonObject:
+        """Return the device name as a Python str ('cpu' or 'meta')."""
+        if self_ptr[].device_code == 1:
+            return PythonObject("meta")
+        return PythonObject("cpu")
+
+    @staticmethod
     def copy_to(
         self_ptr: Pointer[Self, MutAnyOrigin],
         arr: PythonObject,
     ) raises:
         """Copy element storage into a contiguous float32 NumPy array."""
+        if self_ptr[].device_code == 1:
+            raise Error(
+                "mojodl.DeviceError: cannot copy data from a Meta tensor"
+            )
         var nbytes = self_ptr[].nbytes
         if nbytes < 1:
             return
         var dest = arr.ctypes.data.unsafe_get_as_pointer[DType.uint8]()
         unsafe_memcpy(dest=dest, src=self_ptr[].data.value(), count=nbytes)
+
+
+def empty(shape_obj: PythonObject, device_code_obj: PythonObject) raises -> PythonObject:
+    """Create an uninitialized cpu Tensor or a Meta tensor (no storage).
+
+    `shape_obj` is a sequence of non-negative ints. `device_code_obj` is
+    0 (cpu) or 1 (meta). Cpu allocates through accounting; Meta never
+    calls accounted_alloc.
+    """
+    var device_code = Int(py=device_code_obj)
+    var ndim = len(shape_obj)
+    var shape = List[Int](capacity=Int(ndim))
+    for i in range(ndim):
+        shape.append(Int(py=shape_obj[i]))
+    var strides = _row_major_strides(shape)
+
+    var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
+    var nbytes: Int
+    if device_code == 1:  # meta
+        data = None
+        nbytes = 0
+    else:
+        nbytes = _nelem(shape) * 4
+        if nbytes < 1:
+            data = None
+        else:
+            data = Optional(accounted_alloc(nbytes))
+
+    var result = Tensor(
+        data^,
+        nbytes,
+        shape^,
+        strides^,
+        0,
+        device_code,
+    )
+    return PythonObject(alloc=result^)
