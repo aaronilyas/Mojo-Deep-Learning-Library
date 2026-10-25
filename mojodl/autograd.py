@@ -24,6 +24,12 @@ _FREED_SAVED_MSG = (
     "(or directly access saved tensors after they have already been freed). "
     "Specify retain_graph=True if you need to backward through the graph a second time."
 )
+_NO_GRAD_BACKWARD_MSG = (
+    "element 0 of tensors does not require grad and does not have a grad_fn"
+)
+_NONSCALAR_BACKWARD_MSG = (
+    "grad can be implicitly created only for scalar outputs"
+)
 
 
 def _device_code(device: str) -> int:
@@ -263,8 +269,20 @@ def _ones_like_seed(tensor: Tensor) -> Tensor:
     )
 
 
+def _numel(shape: tuple) -> int:
+    """Product of dims; empty shape () is 1 (a scalar)."""
+    n = 1
+    for d in shape:
+        n *= d
+    return n
+
+
 def backward(tensor: Tensor, retain_graph: bool = False) -> None:
-    """Run reverse-mode AD from `tensor` (assumes a 1-element output for now).
+    """Run reverse-mode AD from `tensor`.
+
+    The output must require grad and have exactly one element (any rank);
+    otherwise raises ``AutogradError`` before allocating a seed or touching
+    any leaf ``.grad``.
 
     Visits nodes in reverse topological order. Each node's incoming gradients
     are fully accumulated before its `apply` runs, so a tensor used more than
@@ -275,14 +293,18 @@ def backward(tensor: Tensor, retain_graph: bool = False) -> None:
     released node raises ``AutogradError`` during graph discovery, before any
     leaf ``.grad`` is modified.
     """
+    from . import AutogradError
+
+    if not tensor.requires_grad:
+        raise AutogradError(_NO_GRAD_BACKWARD_MSG)
+    if _numel(tensor.shape) != 1:
+        raise AutogradError(_NONSCALAR_BACKWARD_MSG)
+
     root = tensor.grad_fn
     if root is None:
-        # Leaf or non-grad tensor: nothing to propagate through a graph.
-        # A requires_grad leaf scalar would accumulate a seed into itself; the
-        # current tests always call backward on a sum result.
-        if tensor.requires_grad:
-            seed = _ones_like_seed(tensor)
-            AccumulateGrad(tensor).apply(seed)
+        # requires_grad leaf with one element: accumulate seed into itself.
+        seed = _ones_like_seed(tensor)
+        AccumulateGrad(tensor).apply(seed)
         return
 
     # Count how many times each reachable node appears as a next_function so

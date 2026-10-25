@@ -239,10 +239,11 @@ class Tensor:
     def backward(self, retain_graph: bool = False) -> None:
         """Compute gradients of this tensor w.r.t. leaves that require grad.
 
-        Assumes a 1-element output for now (non-scalar error is a later slice).
-        When ``retain_graph`` is False (default), nodes free tensors saved for
-        backward after the traversal; a second backward through those nodes
-        raises ``AutogradError``. Pass ``retain_graph=True`` to keep them.
+        The tensor must require grad and have exactly one element (any rank);
+        otherwise raises ``AutogradError``. When ``retain_graph`` is False
+        (default), nodes free tensors saved for backward after the traversal;
+        a second backward through those nodes raises ``AutogradError``. Pass
+        ``retain_graph=True`` to keep them.
         """
         from . import autograd
 
