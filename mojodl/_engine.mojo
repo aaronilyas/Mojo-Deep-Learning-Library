@@ -14,6 +14,7 @@ from accounting import (
     reset_peak_memory_stats,
 )
 from tensor_core import Tensor
+from ops import add
 
 
 @export
@@ -35,6 +36,10 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[reset_peak_memory_stats](
             "reset_peak_memory_stats",
             docstring="Set peak tensor memory equal to the current live count.",
+        )
+        m.def_function[add](
+            "add",
+            docstring="Same-shape elementwise add Reference kernel.",
         )
         var mod = m.finalize()
         var acct = Accounting(0, 0)

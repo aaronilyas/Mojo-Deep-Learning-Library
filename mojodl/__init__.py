@@ -16,6 +16,36 @@ memory_stats = _engine.memory_stats
 reset_peak_memory_stats = _engine.reset_peak_memory_stats
 
 
+class ShapeError(ValueError):
+    """Raised when tensor shapes are incompatible for an operation."""
+
+
+# Mojo raises Error with a stable type tag in the message; map tags here so
+# later ops (budget errors, etc.) share one remapping path.
+_MOJO_ERROR_TAGS: tuple[tuple[str, type[Exception]], ...] = (
+    ("mojodl.ShapeError:", ShapeError),
+)
+
+
+def _map_mojo_error(exc: BaseException) -> BaseException:
+    """Translate a tagged Mojo Error into a public mojodl exception."""
+    msg = str(exc)
+    for tag, cls in _MOJO_ERROR_TAGS:
+        if tag in msg:
+            return cls(msg)
+    return exc
+
+
+def _call_engine(fn, *args):
+    try:
+        return fn(*args)
+    except Exception as e:
+        mapped = _map_mojo_error(e)
+        if mapped is e:
+            raise
+        raise mapped from e
+
+
 class _Float32Dtype:
     """Public dtype tag for contiguous fp32 tensors."""
 
@@ -48,8 +78,17 @@ class Tensor:
         arr = np.asarray(data, dtype=np.float32)
         if arr.dtype == object:
             raise ValueError("cannot create Tensor from ragged or non-numeric data")
-        arr = np.ascontiguousarray(arr, dtype=np.float32)
+        # ascontiguousarray promotes 0-d arrays to shape (1,); only copy when needed.
+        if not arr.flags.c_contiguous:
+            arr = np.ascontiguousarray(arr, dtype=np.float32)
         self._core = _engine.Tensor(arr)
+
+    @classmethod
+    def _from_core(cls, core) -> Tensor:
+        """Wrap an existing engine Tensor without copying storage."""
+        obj = object.__new__(cls)
+        obj._core = core
+        return obj
 
     @property
     def shape(self) -> tuple:
@@ -64,12 +103,21 @@ class Tensor:
         self._core.copy_to(out)
         return out
 
+    def __add__(self, other):
+        if not isinstance(other, Tensor):
+            return NotImplemented
+        return Tensor._from_core(_call_engine(_engine.add, self._core, other._core))
+
+    def __radd__(self, other):
+        return NotImplemented
+
 
 __all__ = [
     "answer",
     "_engine",
     "Tensor",
     "float32",
+    "ShapeError",
     "memory_stats",
     "reset_peak_memory_stats",
 ]
