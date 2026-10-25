@@ -17,5 +17,5 @@ pytorch-cpu = "*"
 default = ["test"]
 
 [tasks]
-build = "mojo build mojodl/_engine.mojo --emit shared-lib -o mojodl/_engine.so"
+build = "mojo build mojodl/_engine.mojo -I mojodl --emit shared-lib -o mojodl/_engine.so"
 test = { cmd = "python -m pytest tests", depends-on = ["build"] }
