@@ -16,7 +16,7 @@ from accounting import (
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
 from ops_linalg import matmul, matmul_nt, matmul_tn
-from ops_activation import relu, relu_backward, exp
+from ops_activation import relu, relu_backward, exp, log, log_backward
 
 
 @export
@@ -94,6 +94,14 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[exp](
             "exp",
             docstring="Elementwise exp Reference kernel / Meta version.",
+        )
+        m.def_function[log](
+            "log",
+            docstring="Elementwise natural log Reference kernel / Meta version.",
+        )
+        m.def_function[log_backward](
+            "log_backward",
+            docstring="Log backward: grad / x (Reference / Meta).",
         )
 
         var mod = m.finalize()

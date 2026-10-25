@@ -404,6 +404,36 @@ def record_exp(result: Tensor, inp: Tensor) -> Tensor:
     return attach(result, ExpBackward(nxt, saved_out))
 
 
+class LogBackward(Node):
+    """Log: grad_in = grad / x.
+
+    Saves only the input x (needed to divide the upstream gradient).
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
+
+    def __init__(self, next_x: Node, x: Tensor):
+        self.next_functions = (next_x,)
+        self.save_for_backward(x)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        (saved_x,) = self.saved_tensors()
+        grad_x = _wrap(
+            _call_engine(_engine.log_backward, grad_output._core, saved_x._core)
+        )
+        return [(self.next_functions[0], grad_x)]
+
+
+def record_log(result: Tensor, inp: Tensor) -> Tensor:
+    """Attach a LogBackward node when `inp` requires grad."""
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    return attach(result, LogBackward(nxt, inp))
+
+
 def _ones_like_seed(tensor: Tensor) -> Tensor:
     """Engine-created ones tensor with the output's shape and device (seed grad)."""
     from . import _engine

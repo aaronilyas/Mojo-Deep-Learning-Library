@@ -281,6 +281,13 @@ class Tensor:
         result = Tensor._from_core(_call_engine(_engine.exp, self._core))
         return autograd.record_exp(result, self)
 
+    def log(self):
+        """Elementwise natural logarithm: ln(x)."""
+        from . import autograd
+
+        result = Tensor._from_core(_call_engine(_engine.log, self._core))
+        return autograd.record_log(result, self)
+
     def backward(self, retain_graph: bool = False) -> None:
         """Compute gradients of this tensor w.r.t. leaves that require grad.
 
@@ -319,6 +326,11 @@ def exp(x: Tensor) -> Tensor:
     return x.exp()
 
 
+def log(x: Tensor) -> Tensor:
+    """Elementwise natural logarithm: ln(x). Equivalent to ``x.log()``."""
+    return x.log()
+
+
 __all__ = [
     "Tensor",
     "float32",
@@ -332,4 +344,5 @@ __all__ = [
     "is_grad_enabled",
     "relu",
     "exp",
+    "log",
 ]
