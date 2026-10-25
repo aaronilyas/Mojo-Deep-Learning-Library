@@ -220,13 +220,21 @@ class AddBackward(Node):
 
 
 class MulBackward(Node):
-    """Elementwise mul: grad_a = grad * b, grad_b = grad * a.
+    """Broadcasting elementwise mul: grad_a = (grad * b) reduced to a's shape,
+    grad_b = (grad * a) reduced to b's shape.
 
     Saves each other-operand only when that gradient is needed (the input
-    tensor itself, not a copy).
+    tensor itself, not a copy). Reduce is skipped when the product already
+    has the input's shape.
     """
 
-    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
+    __slots__ = (
+        "next_functions",
+        "_saved_tensors",
+        "_saved_released",
+        "shape_a",
+        "shape_b",
+    )
 
     def __init__(
         self,
@@ -236,6 +244,8 @@ class MulBackward(Node):
         b: Tensor,
     ):
         self.next_functions = (next_a, next_b)
+        self.shape_a = a.shape
+        self.shape_b = b.shape
         # grad_b needs a; grad_a needs b — save only what apply will use.
         self.save_for_backward(
             a if next_b is not None else None,
@@ -249,14 +259,34 @@ class MulBackward(Node):
         out: list[tuple[Node, Tensor]] = []
         next_a, next_b = self.next_functions
         if next_a is not None:
-            grad_a = _wrap(
-                _call_engine(_engine.mul, grad_output._core, saved_b._core)
+            prod = _wrap(
+                _call_engine(
+                    _engine.broadcast_mul, grad_output._core, saved_b._core
+                )
             )
+            if prod.shape == self.shape_a:
+                grad_a = prod
+            else:
+                grad_a = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, prod._core, self.shape_a
+                    )
+                )
             out.append((next_a, grad_a))
         if next_b is not None:
-            grad_b = _wrap(
-                _call_engine(_engine.mul, grad_output._core, saved_a._core)
+            prod = _wrap(
+                _call_engine(
+                    _engine.broadcast_mul, grad_output._core, saved_a._core
+                )
             )
+            if prod.shape == self.shape_b:
+                grad_b = prod
+            else:
+                grad_b = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, prod._core, self.shape_b
+                    )
+                )
             out.append((next_b, grad_b))
         return out
 

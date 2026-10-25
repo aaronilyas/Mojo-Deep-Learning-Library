@@ -1,8 +1,8 @@
 """Broadcasting elementwise ops and gradient reduction.
 
 Reference kernels and Meta versions share `broadcast_out_shape`. The binary
-loop is one internal helper parametrized by op code so later `-`, `*`, `/`
-are thin wrappers; only `broadcast_add` is exposed for now.
+loop is one internal helper parametrized by op code so later `-`, `/`
+are thin wrappers; `broadcast_add` and `broadcast_mul` are exposed.
 """
 
 from std.python import PythonObject
@@ -18,13 +18,15 @@ from ops import (
 from tensor_core import Tensor, _row_major_strides, _nbytes_for_shape
 
 # Op codes for the shared broadcasting binary kernel.
-# 0 = add; later: 1 = sub, 2 = mul, 3 = div.
+# 0 = add; later: 1 = sub; 2 = mul; later: 3 = div.
 
 
 def _apply_binop(op: Int, x: Float32, y: Float32) raises -> Float32:
     """Apply a binary elementwise op by code."""
     if op == 0:  # add
         return x + y
+    if op == 2:  # mul
+        return x * y
     raise Error("internal: unknown elementwise op code")
 
 
@@ -160,6 +162,11 @@ def _broadcast_binop(
 def broadcast_add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
     """Broadcasting elementwise add: Reference kernel or Meta version."""
     return _broadcast_binop(a_obj, b_obj, 0, "add")  # op 0 = add
+
+
+def broadcast_mul(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
+    """Broadcasting elementwise multiply: Reference kernel or Meta version."""
+    return _broadcast_binop(a_obj, b_obj, 2, "multiply")  # op 2 = mul
 
 
 def reduce_to_shape(

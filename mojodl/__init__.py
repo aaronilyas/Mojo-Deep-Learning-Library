@@ -240,7 +240,7 @@ class Tensor:
         from . import autograd
 
         result = Tensor._from_core(
-            _call_engine(_engine.mul, self._core, other._core)
+            _call_engine(_engine.broadcast_mul, self._core, other._core)
         )
         return autograd.record_mul(result, self, other)
 
