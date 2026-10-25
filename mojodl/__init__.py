@@ -40,46 +40,27 @@ class Tensor:
     `.numpy()` returns a fresh copy; mutating it does not affect the tensor.
     """
 
-    __slots__ = ("_shape", "_addr", "_nbytes")
+    __slots__ = ("_core",)
 
     def __init__(self, data):
         arr = np.asarray(data, dtype=np.float32)
         if arr.dtype == object:
             raise ValueError("cannot create Tensor from ragged or non-numeric data")
         arr = np.ascontiguousarray(arr, dtype=np.float32)
-        self._shape = tuple(int(d) for d in arr.shape)
-        self._nbytes = int(arr.nbytes)
-        if self._nbytes == 0:
-            self._addr = 0
-        else:
-            self._addr = int(_engine.tensor_alloc(self._nbytes))
-            _engine.tensor_copy_from(self._addr, arr, self._nbytes)
+        self._core = _engine.Tensor(arr)
 
     @property
     def shape(self) -> tuple:
-        return self._shape
+        return self._core.shape()
 
     @property
     def dtype(self):
         return float32
 
     def numpy(self) -> np.ndarray:
-        out = np.empty(self._shape, dtype=np.float32)
-        if self._nbytes:
-            _engine.tensor_copy_to(self._addr, out, self._nbytes)
+        out = np.empty(self.shape, dtype=np.float32)
+        self._core.copy_to(out)
         return out
-
-    def __del__(self):
-        addr = getattr(self, "_addr", 0)
-        nbytes = getattr(self, "_nbytes", 0)
-        if addr:
-            try:
-                free = getattr(_engine, "tensor_free", None)
-                if free is not None:
-                    free(addr, nbytes)
-            except Exception:
-                pass
-            self._addr = 0
 
 
 __all__ = ["answer", "_engine", "Tensor", "float32"]

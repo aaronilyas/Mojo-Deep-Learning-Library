@@ -49,10 +49,17 @@ def accounted_alloc(nbytes: Int) raises -> Pointer[UInt8, MutUntrackedOrigin]:
 
 def accounted_free(
     ptr: Pointer[UInt8, MutUntrackedOrigin], nbytes: Int
-) raises:
-    """Free storage previously returned by accounted_alloc and debit the count."""
+):
+    """Free storage previously returned by accounted_alloc and debit the count.
+
+    Non-raising so Tensor.__deinit__ can call it. If the accounting singleton
+    is already gone (interpreter shutdown), storage is still freed.
+    """
     if nbytes < 1:
         return
     ptr.unsafe_free()
-    var acct = _accounting_ptr()
-    acct[].current -= nbytes
+    try:
+        var acct = _accounting_ptr()
+        acct[].current -= nbytes
+    except e:
+        pass
