@@ -98,6 +98,64 @@ class SumBackward(Node):
         return [(self.next_functions[0], expanded)]
 
 
+class AddBackward(Node):
+    """Elementwise add: route the incoming gradient to each requiring input.
+
+    Saves no tensors.
+    """
+
+    __slots__ = ("next_functions",)
+
+    def __init__(self, next_a: Node | None, next_b: Node | None):
+        self.next_functions = (next_a, next_b)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        out: list[tuple[Node, Tensor]] = []
+        for nxt in self.next_functions:
+            if nxt is not None:
+                out.append((nxt, grad_output))
+        return out
+
+
+class MulBackward(Node):
+    """Elementwise mul: grad_a = grad * b, grad_b = grad * a.
+
+    Saves each other-operand only when that gradient is needed (the input
+    tensor itself, not a copy).
+    """
+
+    __slots__ = ("next_functions", "saved_a", "saved_b")
+
+    def __init__(
+        self,
+        next_a: Node | None,
+        next_b: Node | None,
+        a: Tensor,
+        b: Tensor,
+    ):
+        self.next_functions = (next_a, next_b)
+        # grad_b needs a; grad_a needs b — save only what apply will use.
+        self.saved_a = a if next_b is not None else None
+        self.saved_b = b if next_a is not None else None
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        out: list[tuple[Node, Tensor]] = []
+        next_a, next_b = self.next_functions
+        if next_a is not None:
+            grad_a = _wrap(
+                _call_engine(_engine.mul, grad_output._core, self.saved_b._core)
+            )
+            out.append((next_a, grad_a))
+        if next_b is not None:
+            grad_b = _wrap(
+                _call_engine(_engine.mul, grad_output._core, self.saved_a._core)
+            )
+            out.append((next_b, grad_b))
+        return out
+
+
 def input_node(tensor: Tensor) -> Node | None:
     """Node to wire as the upstream of an op that used `tensor`.
 
@@ -131,6 +189,24 @@ def record_sum(result: Tensor, inp: Tensor) -> Tensor:
     if nxt is None:
         return result
     return attach(result, SumBackward(nxt, inp.shape, inp.device))
+
+
+def record_add(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
+    """Attach an AddBackward node when either input requires grad."""
+    next_a = input_node(a)
+    next_b = input_node(b)
+    if next_a is None and next_b is None:
+        return result
+    return attach(result, AddBackward(next_a, next_b))
+
+
+def record_mul(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
+    """Attach a MulBackward node when either input requires grad."""
+    next_a = input_node(a)
+    next_b = input_node(b)
+    if next_a is None and next_b is None:
+        return result
+    return attach(result, MulBackward(next_a, next_b, a, b))
 
 
 def _ones_like_seed(tensor: Tensor) -> Tensor:

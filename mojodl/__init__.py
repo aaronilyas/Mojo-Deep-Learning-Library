@@ -202,8 +202,12 @@ class Tensor:
     def __add__(self, other):
         if not isinstance(other, Tensor):
             return NotImplemented
-        # Backward for + is a later slice; forward result only.
-        return Tensor._from_core(_call_engine(_engine.add, self._core, other._core))
+        from . import autograd
+
+        result = Tensor._from_core(
+            _call_engine(_engine.add, self._core, other._core)
+        )
+        return autograd.record_add(result, self, other)
 
     def __radd__(self, other):
         return NotImplemented
@@ -211,8 +215,12 @@ class Tensor:
     def __mul__(self, other):
         if not isinstance(other, Tensor):
             return NotImplemented
-        # Backward for * is a later slice; forward result only.
-        return Tensor._from_core(_call_engine(_engine.mul, self._core, other._core))
+        from . import autograd
+
+        result = Tensor._from_core(
+            _call_engine(_engine.mul, self._core, other._core)
+        )
+        return autograd.record_mul(result, self, other)
 
     def __rmul__(self, other):
         return NotImplemented
