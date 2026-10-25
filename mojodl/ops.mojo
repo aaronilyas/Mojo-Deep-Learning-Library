@@ -5,7 +5,7 @@ allocation happen here so Python only remaps tagged Mojo errors. Every op
 ships a Reference kernel and a Meta version that share output-shape logic.
 """
 
-from std.memory import Pointer
+from std.memory import Pointer, unsafe_memcpy
 from std.python import PythonObject
 from accounting import accounted_alloc
 from tensor_core import Tensor, _row_major_strides, _format_shape, _nbytes_for_shape
@@ -216,5 +216,130 @@ def mul(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
         var n = nbytes // 4
         for i in range(n):
             o_f[unsafe_offset=i] = a_f[unsafe_offset=i] * b_f[unsafe_offset=i]
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def _parse_shape(shape_obj: PythonObject) raises -> List[Int]:
+    """Copy a Python sequence of ints into a Mojo List[Int]."""
+    var ndim = len(shape_obj)
+    var shape = List[Int](capacity=Int(ndim))
+    for i in range(ndim):
+        shape.append(Int(py=shape_obj[i]))
+    return shape^
+
+
+def ones(shape_obj: PythonObject, device_code_obj: PythonObject) raises -> PythonObject:
+    """Create a tensor filled with 1.0 (Reference) or a Meta tensor (no storage).
+
+    Used as the seed gradient for `.backward()`. Output shape is `shape_obj`.
+    Cpu allocates through accounting and fills every element with 1.0; Meta
+    allocates nothing.
+    """
+    var device_code = Int(py=device_code_obj)
+    var out_shape = _parse_shape(shape_obj)
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if device_code == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        var o_f = data.value().unsafe_bitcast[Float32]()
+        var n = nbytes // 4
+        for i in range(n):
+            o_f[unsafe_offset=i] = 1.0
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def expand_scalar(
+    grad_obj: PythonObject, shape_obj: PythonObject
+) raises -> PythonObject:
+    """Expand a shape-() gradient to `shape_obj`, filled with the scalar value.
+
+    Whole-tensor sum backward: every input element receives the same upstream
+    gradient. Devices follow `grad_obj`. Meta returns a Meta tensor with no
+    allocation; cpu allocates through accounting.
+    """
+    var g = grad_obj.downcast_value_ptr[Tensor]()
+    if len(g[].shape) != 0:
+        raise Error(
+            "mojodl.ShapeError: expand_scalar expects a scalar gradient (shape ()), got "
+            + _format_shape(g[].shape)
+        )
+
+    var device_code = g[].device_code
+    var out_shape = _parse_shape(shape_obj)
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if device_code == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var fill: Float32 = 0.0
+    if g[].nbytes >= 1:
+        fill = g[].data.value().unsafe_bitcast[Float32]()[unsafe_offset=0]
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        var o_f = data.value().unsafe_bitcast[Float32]()
+        var n = nbytes // 4
+        for i in range(n):
+            o_f[unsafe_offset=i] = fill
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def add_inplace(dest_obj: PythonObject, src_obj: PythonObject) raises:
+    """In-place same-shape add: dest += src (Reference) or shape-check only (Meta).
+
+    Used to accumulate into a leaf's `.grad` buffer so the buffer keeps its
+    identity across `.backward()` calls. Devices and shapes must match. Meta
+    performs the checks and returns without touching storage.
+    """
+    var dest = dest_obj.downcast_value_ptr[Tensor]()
+    var src = src_obj.downcast_value_ptr[Tensor]()
+
+    var dest_dev = dest[].device_code
+    _ensure_same_device(dest_dev, src[].device_code, "add")
+    if not _shapes_equal(dest[].shape, src[].shape):
+        _raise_shape_error(dest[].shape, src[].shape)
+
+    if dest_dev == 1:  # meta: checks only
+        return
+
+    if dest[].nbytes >= 1:
+        var d_f = dest[].data.value().unsafe_bitcast[Float32]()
+        var s_f = src[].data.value().unsafe_bitcast[Float32]()
+        var n = dest[].nbytes // 4
+        for i in range(n):
+            d_f[unsafe_offset=i] = d_f[unsafe_offset=i] + s_f[unsafe_offset=i]
+
+
+def clone(a_obj: PythonObject) raises -> PythonObject:
+    """Deep-copy a tensor's storage (Reference) or Meta shape (no allocation).
+
+    Used so the first gradient stored into a leaf's `.grad` is a buffer owned
+    by that leaf alone, never aliased with another tensor's storage.
+    """
+    var a = a_obj.downcast_value_ptr[Tensor]()
+    var device_code = a[].device_code
+
+    var out_shape = List[Int](capacity=len(a[].shape))
+    for i in range(len(a[].shape)):
+        out_shape.append(a[].shape[i])
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if device_code == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        unsafe_memcpy(
+            dest=data.value(), src=a[].data.value(), count=nbytes
+        )
 
     return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)

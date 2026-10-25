@@ -14,7 +14,7 @@ from accounting import (
     reset_peak_memory_stats,
 )
 from tensor_core import Tensor, empty
-from ops import add, mul, sum
+from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
 
 
 @export
@@ -52,6 +52,22 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[sum](
             "sum",
             docstring="Whole-tensor sum Reference kernel / Meta version.",
+        )
+        m.def_function[ones](
+            "ones",
+            docstring="Create a ones-filled cpu Tensor or a Meta tensor.",
+        )
+        m.def_function[expand_scalar](
+            "expand_scalar",
+            docstring="Expand a scalar gradient to a target shape (sum backward).",
+        )
+        m.def_function[add_inplace](
+            "add_inplace",
+            docstring="In-place same-shape add for gradient accumulation.",
+        )
+        m.def_function[clone](
+            "clone",
+            docstring="Deep-copy a tensor for owned leaf .grad buffers.",
         )
 
         var mod = m.finalize()

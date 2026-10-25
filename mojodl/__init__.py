@@ -125,11 +125,14 @@ class Tensor:
     converted to float32 on the Python side, then copied into engine storage.
     `.numpy()` returns a fresh copy; mutating it does not affect the tensor.
     Meta tensors (device `"meta"`) hold shape and dtype only.
+
+    Autograd: pass `requires_grad=True` to track ops. `.backward()` on a scalar
+    result fills `.grad` on leaves. Gradients never require grad.
     """
 
-    __slots__ = ("_core",)
+    __slots__ = ("_core", "_requires_grad", "_grad", "_grad_fn")
 
-    def __init__(self, data):
+    def __init__(self, data, requires_grad: bool = False):
         arr = np.asarray(data, dtype=np.float32)
         if arr.dtype == object:
             raise ValueError("cannot create Tensor from ragged or non-numeric data")
@@ -137,12 +140,18 @@ class Tensor:
         if not arr.flags.c_contiguous:
             arr = np.ascontiguousarray(arr, dtype=np.float32)
         self._core = _engine.Tensor(arr)
+        self._requires_grad = bool(requires_grad)
+        self._grad = None
+        self._grad_fn = None
 
     @classmethod
     def _from_core(cls, core) -> Tensor:
         """Wrap an existing engine Tensor without copying storage."""
         obj = object.__new__(cls)
         obj._core = core
+        obj._requires_grad = False
+        obj._grad = None
+        obj._grad_fn = None
         return obj
 
     @property
@@ -157,6 +166,30 @@ class Tensor:
     def device(self) -> str:
         return self._core.device()
 
+    @property
+    def requires_grad(self) -> bool:
+        return self._requires_grad
+
+    @property
+    def is_leaf(self) -> bool:
+        return self._grad_fn is None
+
+    @property
+    def grad(self):
+        return self._grad
+
+    @grad.setter
+    def grad(self, value) -> None:
+        if value is not None and not isinstance(value, Tensor):
+            raise TypeError(
+                f"grad must be a Tensor or None, got {type(value).__name__}"
+            )
+        self._grad = value
+
+    @property
+    def grad_fn(self):
+        return self._grad_fn
+
     def numpy(self) -> np.ndarray:
         if self.device == "meta":
             raise DeviceError(
@@ -169,6 +202,7 @@ class Tensor:
     def __add__(self, other):
         if not isinstance(other, Tensor):
             return NotImplemented
+        # Backward for + is a later slice; forward result only.
         return Tensor._from_core(_call_engine(_engine.add, self._core, other._core))
 
     def __radd__(self, other):
@@ -177,6 +211,7 @@ class Tensor:
     def __mul__(self, other):
         if not isinstance(other, Tensor):
             return NotImplemented
+        # Backward for * is a later slice; forward result only.
         return Tensor._from_core(_call_engine(_engine.mul, self._core, other._core))
 
     def __rmul__(self, other):
@@ -184,7 +219,19 @@ class Tensor:
 
     def sum(self):
         """Reduce all elements to a scalar tensor (shape ())."""
-        return Tensor._from_core(_call_engine(_engine.sum, self._core))
+        from . import autograd
+
+        result = Tensor._from_core(_call_engine(_engine.sum, self._core))
+        return autograd.record_sum(result, self)
+
+    def backward(self) -> None:
+        """Compute gradients of this tensor w.r.t. leaves that require grad.
+
+        Assumes a 1-element output for now (non-scalar error is a later slice).
+        """
+        from . import autograd
+
+        autograd.backward(self)
 
 
 __all__ = [
