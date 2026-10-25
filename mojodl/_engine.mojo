@@ -14,7 +14,7 @@ from accounting import (
     reset_peak_memory_stats,
 )
 from tensor_core import Tensor, empty
-from ops import add
+from ops import add, mul
 
 
 @export
@@ -45,6 +45,11 @@ def PyInit__engine() abi("C") -> PythonObject:
             "add",
             docstring="Same-shape elementwise add Reference kernel / Meta version.",
         )
+        m.def_function[mul](
+            "mul",
+            docstring="Same-shape elementwise multiply Reference kernel / Meta version.",
+        )
+
         var mod = m.finalize()
         var acct = Accounting(0, 0)
         Python.add_object(mod, "_accounting", PythonObject(alloc=acct^))

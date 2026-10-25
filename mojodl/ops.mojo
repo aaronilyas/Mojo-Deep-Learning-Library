@@ -39,10 +39,16 @@ def _device_name(code: Int) -> String:
     return "cpu"
 
 
-def _raise_device_error(a_code: Int, b_code: Int) raises:
-    """Raise a tagged Error that the Python veneer maps to mojodl.DeviceError."""
+def _raise_device_error(a_code: Int, b_code: Int, op: String) raises:
+    """Raise a tagged Error that the Python veneer maps to mojodl.DeviceError.
+
+    `op` is the verb in the message (e.g. "add", "multiply") so callers know
+    which operation mixed devices.
+    """
     raise Error(
-        "mojodl.DeviceError: cannot add tensors on devices '"
+        "mojodl.DeviceError: cannot "
+        + op
+        + " tensors on devices '"
         + _device_name(a_code)
         + "' and '"
         + _device_name(b_code)
@@ -50,8 +56,14 @@ def _raise_device_error(a_code: Int, b_code: Int) raises:
     )
 
 
+def _ensure_same_device(a_code: Int, b_code: Int, op: String) raises:
+    """Device check shared by same-shape binary ops; raises DeviceError naming `op`."""
+    if a_code != b_code:
+        _raise_device_error(a_code, b_code, op)
+
+
 def _checked_out_shape(a: List[Int], b: List[Int]) raises -> List[Int]:
-    """Shared shape check and output-shape for Reference and Meta add.
+    """Shared shape check and output-shape for Reference and Meta same-shape ops.
 
     Raises ShapeError when shapes differ; otherwise returns a copy of `a`.
     """
@@ -61,6 +73,46 @@ def _checked_out_shape(a: List[Int], b: List[Int]) raises -> List[Int]:
     for i in range(len(a)):
         out_shape.append(a[i])
     return out_shape^
+
+
+def _alloc_fp32_out(nbytes: Int) raises -> Optional[Pointer[UInt8, MutUntrackedOrigin]]:
+    """Allocate cpu output storage through accounting (or None for empty tensors)."""
+    if nbytes < 1:
+        return None
+    return Optional(accounted_alloc(nbytes))
+
+
+def _make_meta_result(
+    var out_shape: List[Int], var out_strides: List[Int]
+) raises -> PythonObject:
+    """Build a Meta tensor (no storage) for the Meta path of a same-shape binary op."""
+    var meta_result = Tensor(
+        None,
+        0,
+        out_shape^,
+        out_strides^,
+        0,
+        1,
+    )
+    return PythonObject(alloc=meta_result^)
+
+
+def _make_cpu_result(
+    var data: Optional[Pointer[UInt8, MutUntrackedOrigin]],
+    nbytes: Int,
+    var out_shape: List[Int],
+    var out_strides: List[Int],
+) raises -> PythonObject:
+    """Wrap allocated cpu storage as a Tensor PythonObject."""
+    var result = Tensor(
+        data^,
+        nbytes,
+        out_shape^,
+        out_strides^,
+        0,
+        0,  # cpu
+    )
+    return PythonObject(alloc=result^)
 
 
 def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
@@ -74,9 +126,7 @@ def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
     var b = b_obj.downcast_value_ptr[Tensor]()
 
     var a_dev = a[].device_code
-    var b_dev = b[].device_code
-    if a_dev != b_dev:
-        _raise_device_error(a_dev, b_dev)
+    _ensure_same_device(a_dev, b[].device_code, "add")
 
     var out_shape = _checked_out_shape(a[].shape, b[].shape)
     var out_strides = _row_major_strides(out_shape)
@@ -84,21 +134,10 @@ def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
     var nbytes = _nbytes_for_shape(out_shape)
 
     if a_dev == 1:  # meta
-        var meta_result = Tensor(
-            None,
-            0,
-            out_shape^,
-            out_strides^,
-            0,
-            1,
-        )
-        return PythonObject(alloc=meta_result^)
+        return _make_meta_result(out_shape^, out_strides^)
 
-    var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
-    if nbytes < 1:
-        data = None
-    else:
-        data = Optional(accounted_alloc(nbytes))
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
         var a_f = a[].data.value().unsafe_bitcast[Float32]()
         var b_f = b[].data.value().unsafe_bitcast[Float32]()
         var o_f = data.value().unsafe_bitcast[Float32]()
@@ -106,12 +145,37 @@ def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
         for i in range(n):
             o_f[unsafe_offset=i] = a_f[unsafe_offset=i] + b_f[unsafe_offset=i]
 
-    var result = Tensor(
-        data^,
-        nbytes,
-        out_shape^,
-        out_strides^,
-        0,
-        0,  # cpu
-    )
-    return PythonObject(alloc=result^)
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def mul(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
+    """Same-shape elementwise multiply: Reference kernel or Meta version.
+
+    Devices must match. Output shape comes from `_checked_out_shape` so the
+    Reference and Meta paths cannot diverge. Meta returns a Meta tensor with
+    no allocation; cpu allocates through accounting.
+    """
+    var a = a_obj.downcast_value_ptr[Tensor]()
+    var b = b_obj.downcast_value_ptr[Tensor]()
+
+    var a_dev = a[].device_code
+    _ensure_same_device(a_dev, b[].device_code, "multiply")
+
+    var out_shape = _checked_out_shape(a[].shape, b[].shape)
+    var out_strides = _row_major_strides(out_shape)
+    # Size from shape (cpu and meta); overflow raises before allocation.
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if a_dev == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        var a_f = a[].data.value().unsafe_bitcast[Float32]()
+        var b_f = b[].data.value().unsafe_bitcast[Float32]()
+        var o_f = data.value().unsafe_bitcast[Float32]()
+        var n = nbytes // 4
+        for i in range(n):
+            o_f[unsafe_offset=i] = a_f[unsafe_offset=i] * b_f[unsafe_offset=i]
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)

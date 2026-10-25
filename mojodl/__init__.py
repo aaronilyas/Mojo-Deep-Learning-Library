@@ -174,6 +174,14 @@ class Tensor:
     def __radd__(self, other):
         return NotImplemented
 
+    def __mul__(self, other):
+        if not isinstance(other, Tensor):
+            return NotImplemented
+        return Tensor._from_core(_call_engine(_engine.mul, self._core, other._core))
+
+    def __rmul__(self, other):
+        return NotImplemented
+
 
 __all__ = [
     "Tensor",
