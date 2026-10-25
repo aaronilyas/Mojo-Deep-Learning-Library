@@ -148,6 +148,45 @@ def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
     return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
 
 
+def _whole_sum_out_shape() -> List[Int]:
+    """Output shape for whole-tensor sum: always a scalar (shape ()).
+
+    Shared by the Reference kernel and Meta version so the two paths cannot
+    diverge. A later axis-reduction ticket can replace or extend this.
+    """
+    return List[Int]()
+
+
+def sum(a_obj: PythonObject) raises -> PythonObject:
+    """Whole-tensor sum: Reference kernel or Meta version.
+
+    Reduces every element to a scalar (shape ()). Empty input sums to 0.0.
+    Meta returns a Meta scalar with no allocation; cpu allocates 4 bytes
+    through accounting. Output shape comes from `_whole_sum_out_shape`.
+    """
+    var a = a_obj.downcast_value_ptr[Tensor]()
+    var a_dev = a[].device_code
+
+    var out_shape = _whole_sum_out_shape()
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if a_dev == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    var o_f = data.value().unsafe_bitcast[Float32]()
+    var acc: Float32 = 0.0
+    if a[].nbytes >= 1:
+        var a_f = a[].data.value().unsafe_bitcast[Float32]()
+        var n = a[].nbytes // 4
+        for i in range(n):
+            acc = acc + a_f[unsafe_offset=i]
+    o_f[unsafe_offset=0] = acc
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
 def mul(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
     """Same-shape elementwise multiply: Reference kernel or Meta version.
 

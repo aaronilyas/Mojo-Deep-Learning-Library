@@ -14,7 +14,7 @@ from accounting import (
     reset_peak_memory_stats,
 )
 from tensor_core import Tensor, empty
-from ops import add, mul
+from ops import add, mul, sum
 
 
 @export
@@ -48,6 +48,10 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[mul](
             "mul",
             docstring="Same-shape elementwise multiply Reference kernel / Meta version.",
+        )
+        m.def_function[sum](
+            "sum",
+            docstring="Whole-tensor sum Reference kernel / Meta version.",
         )
 
         var mod = m.finalize()

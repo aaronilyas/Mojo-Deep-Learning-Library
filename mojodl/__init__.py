@@ -182,6 +182,10 @@ class Tensor:
     def __rmul__(self, other):
         return NotImplemented
 
+    def sum(self):
+        """Reduce all elements to a scalar tensor (shape ())."""
+        return Tensor._from_core(_call_engine(_engine.sum, self._core))
+
 
 __all__ = [
     "Tensor",
