@@ -189,9 +189,22 @@ class Tensor:
 
     @grad.setter
     def grad(self, value) -> None:
-        if value is not None and not isinstance(value, Tensor):
+        if value is None:
+            self._grad = None
+            return
+        if not isinstance(value, Tensor):
             raise TypeError(
                 f"grad must be a Tensor or None, got {type(value).__name__}"
+            )
+        if value.shape != self.shape:
+            raise AutogradError(
+                f"attempting to assign a gradient of size '{value.shape}' "
+                f"to a tensor of size '{self.shape}'"
+            )
+        if value.device != self.device:
+            raise AutogradError(
+                f"attempting to assign a gradient with device type '{value.device}' "
+                f"to a tensor with device type '{self.device}'"
             )
         self._grad = value
 
