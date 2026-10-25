@@ -50,13 +50,16 @@ def reset_peak_memory_stats() raises:
 def accounted_alloc(nbytes: Int) raises -> Pointer[UInt8, MutUntrackedOrigin]:
     """Allocate `nbytes` via the platform allocator and record them.
 
-    Raises if `nbytes` is not positive. Updates current and peak counters.
-    Counter update failures propagate (not swallowed).
+    Raises if `nbytes` is not positive. Resolves accounting before allocating
+    so a failed lookup cannot leak a block. Counter updates run only after a
+    successful allocation and cannot raise, so counters change only on success
+    and no post-alloc failure path can orphan the block.
     """
     if nbytes < 1:
         raise Error("accounted_alloc: nbytes must be positive")
-    var ptr = unsafe_alloc[UInt8](nbytes)
+    # Resolve accounting first: a failed lookup must not leave an orphan block.
     var acct = _accounting_ptr()
+    var ptr = unsafe_alloc[UInt8](nbytes)
     acct[].current += nbytes
     if acct[].current > acct[].peak:
         acct[].peak = acct[].current

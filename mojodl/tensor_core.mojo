@@ -70,6 +70,29 @@ def _nbytes_for_shape(shape: List[Int]) raises -> Int:
     return nelem * 4
 
 
+def _require_numpy_f32_buffer(
+    arr: PythonObject, expected_nbytes: Int, *, writeable: Bool
+) raises:
+    """Raise unless `arr` is a safe float32 NumPy buffer of `expected_nbytes`.
+
+    Requires a NumPy ndarray with dtype float32, C-contiguous layout, and
+    `arr.nbytes == expected_nbytes`. When `writeable` is true, also requires
+    a writeable buffer (for copy destinations).
+    """
+    var np = Python.import_module("numpy")
+    var builtins = Python.import_module("builtins")
+    if not builtins.isinstance(arr, np.ndarray):
+        raise Error("TypeError: expected a NumPy ndarray")
+    if arr.dtype != np.float32:
+        raise Error("TypeError: expected dtype float32")
+    if not arr.flags.c_contiguous:
+        raise Error("ValueError: array must be C-contiguous")
+    if writeable and not arr.flags.writeable:
+        raise Error("ValueError: array must be writeable")
+    if Int(py=arr.nbytes) != expected_nbytes:
+        raise Error("ValueError: array nbytes does not match tensor byte size")
+
+
 @fieldwise_init
 struct Tensor(Movable, Writable):
     """Eager fp32 tensor; Meta tensors hold shape/dtype only."""
@@ -111,12 +134,19 @@ struct Tensor(Movable, Writable):
         if len(args) != 1:
             raise Error("Tensor() takes exactly 1 argument (a NumPy array)")
         var arr = args[0]
+        # Reject non-ndarrays before touching .shape / allocating.
+        var np = Python.import_module("numpy")
+        var builtins = Python.import_module("builtins")
+        if not builtins.isinstance(arr, np.ndarray):
+            raise Error("TypeError: expected a NumPy ndarray")
         var shape_obj = arr.shape
         var ndim = len(shape_obj)
         var shape = List[Int](capacity=Int(ndim))
         for i in range(ndim):
             shape.append(Int(py=shape_obj[i]))
         var nbytes = _nbytes_for_shape(shape)
+        # Validate dtype, contiguity, and size before any allocation or memcpy.
+        _require_numpy_f32_buffer(arr, nbytes, writeable=False)
         var strides = _row_major_strides(shape)
 
         var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
@@ -169,6 +199,7 @@ struct Tensor(Movable, Writable):
         var nbytes = self_ptr[].nbytes
         if nbytes < 1:
             return
+        _require_numpy_f32_buffer(arr, nbytes, writeable=True)
         var dest = arr.ctypes.data.unsafe_get_as_pointer[DType.uint8]()
         unsafe_memcpy(dest=dest, src=self_ptr[].data.value(), count=nbytes)
 
