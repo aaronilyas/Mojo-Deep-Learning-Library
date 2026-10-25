@@ -11,7 +11,6 @@ except ImportError as e:
 
 import numpy as np
 
-answer = _engine.answer
 memory_stats = _engine.memory_stats
 reset_peak_memory_stats = _engine.reset_peak_memory_stats
 
@@ -173,8 +172,6 @@ class Tensor:
 
 
 __all__ = [
-    "answer",
-    "_engine",
     "Tensor",
     "float32",
     "empty",

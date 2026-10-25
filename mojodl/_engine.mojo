@@ -1,8 +1,8 @@
 """Python extension module for the Mojo engine.
 
-Exposes answer() (smoke test) and the Tensor type that owns fp32 storage,
-shape, strides, and device. Element storage is allocated and freed only
-inside Tensor, through the accounting layer. Meta tensors hold no storage.
+Exposes the Tensor type that owns fp32 storage, shape, strides, and device.
+Element storage is allocated and freed only inside Tensor, through the
+accounting layer. Meta tensors hold no storage.
 """
 
 from std.python import PythonObject, Python
@@ -29,7 +29,6 @@ def PyInit__engine() abi("C") -> PythonObject:
             .def_method[Tensor.device_str]("device")
             .def_method[Tensor.copy_to]("copy_to")
         )
-        m.def_function[answer]("answer", docstring="Return the answer to everything.")
         m.def_function[memory_stats](
             "memory_stats",
             docstring="Return current and peak tensor memory in bytes.",
@@ -52,7 +51,3 @@ def PyInit__engine() abi("C") -> PythonObject:
         return mod
     except e:
         abort(String("error creating Python Mojo module: ", e))
-
-
-def answer() -> PythonObject:
-    return PythonObject(42)
