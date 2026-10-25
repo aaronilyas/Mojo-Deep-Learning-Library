@@ -219,6 +219,56 @@ class AddBackward(Node):
         return out
 
 
+class SubBackward(Node):
+    """Elementwise sub: grad_a = grad reduced to a's shape;
+    grad_b = (-grad) reduced to b's shape.
+
+    Reduce is skipped when shapes already match. Saves no tensors — only
+    the input shapes. Negation uses the engine `neg` op (Meta-safe).
+    """
+
+    __slots__ = ("next_functions", "shape_a", "shape_b")
+
+    def __init__(
+        self,
+        next_a: Node | None,
+        next_b: Node | None,
+        shape_a: tuple,
+        shape_b: tuple,
+    ):
+        self.next_functions = (next_a, next_b)
+        self.shape_a = shape_a
+        self.shape_b = shape_b
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        out: list[tuple[Node, Tensor]] = []
+        next_a, next_b = self.next_functions
+        if next_a is not None:
+            if grad_output.shape == self.shape_a:
+                grad_a = grad_output
+            else:
+                grad_a = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, grad_output._core, self.shape_a
+                    )
+                )
+            out.append((next_a, grad_a))
+        if next_b is not None:
+            neg_grad = _wrap(_call_engine(_engine.neg, grad_output._core))
+            if neg_grad.shape == self.shape_b:
+                grad_b = neg_grad
+            else:
+                grad_b = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, neg_grad._core, self.shape_b
+                    )
+                )
+            out.append((next_b, grad_b))
+        return out
+
+
 class MulBackward(Node):
     """Broadcasting elementwise mul: grad_a = (grad * b) reduced to a's shape,
     grad_b = (grad * a) reduced to b's shape.
@@ -335,6 +385,15 @@ def record_add(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
     if next_a is None and next_b is None:
         return result
     return attach(result, AddBackward(next_a, next_b, a.shape, b.shape))
+
+
+def record_sub(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
+    """Attach a SubBackward node when either input requires grad."""
+    next_a = input_node(a)
+    next_b = input_node(b)
+    if next_a is None and next_b is None:
+        return result
+    return attach(result, SubBackward(next_a, next_b, a.shape, b.shape))
 
 
 def record_mul(result: Tensor, a: Tensor, b: Tensor) -> Tensor:

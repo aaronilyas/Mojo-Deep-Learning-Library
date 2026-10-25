@@ -16,6 +16,7 @@ import mojodl
 OPS = {
     "add": operator.add,
     "mul": operator.mul,
+    "sub": operator.sub,
 }
 
 BROADCAST_CASES = [

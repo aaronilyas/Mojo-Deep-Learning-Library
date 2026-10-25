@@ -234,6 +234,19 @@ class Tensor:
     def __radd__(self, other):
         return NotImplemented
 
+    def __sub__(self, other):
+        if not isinstance(other, Tensor):
+            return NotImplemented
+        from . import autograd
+
+        result = Tensor._from_core(
+            _call_engine(_engine.broadcast_sub, self._core, other._core)
+        )
+        return autograd.record_sub(result, self, other)
+
+    def __rsub__(self, other):
+        return NotImplemented
+
     def __mul__(self, other):
         if not isinstance(other, Tensor):
             return NotImplemented

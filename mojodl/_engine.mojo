@@ -15,7 +15,13 @@ from accounting import (
 )
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
-from ops_elementwise import broadcast_add, broadcast_mul, reduce_to_shape
+from ops_elementwise import (
+    broadcast_add,
+    broadcast_sub,
+    broadcast_mul,
+    neg,
+    reduce_to_shape,
+)
 
 
 @export
@@ -74,9 +80,17 @@ def PyInit__engine() abi("C") -> PythonObject:
             "broadcast_add",
             docstring="Broadcasting elementwise add Reference kernel / Meta version.",
         )
+        m.def_function[broadcast_sub](
+            "broadcast_sub",
+            docstring="Broadcasting elementwise subtract Reference kernel / Meta version.",
+        )
         m.def_function[broadcast_mul](
             "broadcast_mul",
             docstring="Broadcasting elementwise multiply Reference kernel / Meta version.",
+        )
+        m.def_function[neg](
+            "neg",
+            docstring="Elementwise negate Reference kernel / Meta version.",
         )
         m.def_function[reduce_to_shape](
             "reduce_to_shape",

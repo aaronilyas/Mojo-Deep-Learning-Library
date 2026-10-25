@@ -1,8 +1,9 @@
 """Broadcasting elementwise ops and gradient reduction.
 
 Reference kernels and Meta versions share `broadcast_out_shape`. The binary
-loop is one internal helper parametrized by op code so later `-`, `/`
-are thin wrappers; `broadcast_add` and `broadcast_mul` are exposed.
+loop is one internal helper parametrized by op code so `-`, `/` are thin
+wrappers; `broadcast_add`, `broadcast_mul`, and `broadcast_sub` are exposed.
+Unary `neg` supports sub backward.
 """
 
 from std.python import PythonObject
@@ -18,13 +19,15 @@ from ops import (
 from tensor_core import Tensor, _row_major_strides, _nbytes_for_shape
 
 # Op codes for the shared broadcasting binary kernel.
-# 0 = add; later: 1 = sub; 2 = mul; later: 3 = div.
+# 0 = add; 1 = sub; 2 = mul; later: 3 = div.
 
 
 def _apply_binop(op: Int, x: Float32, y: Float32) raises -> Float32:
     """Apply a binary elementwise op by code."""
     if op == 0:  # add
         return x + y
+    if op == 1:  # sub
+        return x - y
     if op == 2:  # mul
         return x * y
     raise Error("internal: unknown elementwise op code")
@@ -164,9 +167,49 @@ def broadcast_add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObje
     return _broadcast_binop(a_obj, b_obj, 0, "add")  # op 0 = add
 
 
+def broadcast_sub(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
+    """Broadcasting elementwise subtract: Reference kernel or Meta version."""
+    return _broadcast_binop(a_obj, b_obj, 1, "subtract")  # op 1 = sub
+
+
 def broadcast_mul(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
     """Broadcasting elementwise multiply: Reference kernel or Meta version."""
     return _broadcast_binop(a_obj, b_obj, 2, "multiply")  # op 2 = mul
+
+
+def _neg_out_shape(in_shape: List[Int]) -> List[Int]:
+    """Output shape for elementwise negate: same as input (Reference and Meta)."""
+    var out = List[Int](capacity=len(in_shape))
+    for i in range(len(in_shape)):
+        out.append(in_shape[i])
+    return out^
+
+
+def neg(a_obj: PythonObject) raises -> PythonObject:
+    """Elementwise negate: Reference kernel or Meta version.
+
+    Output shape matches the input. Meta allocates nothing; cpu allocates
+    through accounting. Internal engine helper for sub backward.
+    """
+    var a = a_obj.downcast_value_ptr[Tensor]()
+    var device_code = a[].device_code
+
+    var out_shape = _neg_out_shape(a[].shape)
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if device_code == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        var a_f = a[].data.value().unsafe_bitcast[Float32]()
+        var o_f = data.value().unsafe_bitcast[Float32]()
+        var n = nbytes // 4
+        for i in range(n):
+            o_f[unsafe_offset=i] = -a_f[unsafe_offset=i]
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
 
 
 def reduce_to_shape(
