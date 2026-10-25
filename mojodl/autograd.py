@@ -341,6 +341,89 @@ class MulBackward(Node):
         return out
 
 
+class DivBackward(Node):
+    """Broadcasting elementwise div: grad_a = (grad / b) reduced to a's shape,
+    grad_b = (-grad * a / b²) reduced to b's shape.
+
+    Built from broadcast_div, broadcast_mul, neg, and reduce_to_shape.
+    Saves b whenever any gradient is needed; a only if b requires grad
+    (the input tensors themselves). Reduce is skipped when shapes match.
+    """
+
+    __slots__ = (
+        "next_functions",
+        "_saved_tensors",
+        "_saved_released",
+        "shape_a",
+        "shape_b",
+    )
+
+    def __init__(
+        self,
+        next_a: Node | None,
+        next_b: Node | None,
+        a: Tensor,
+        b: Tensor,
+    ):
+        self.next_functions = (next_a, next_b)
+        self.shape_a = a.shape
+        self.shape_b = b.shape
+        # grad_a needs b; grad_b needs a and b — save only what apply will use.
+        self.save_for_backward(
+            a if next_b is not None else None,
+            b if next_a is not None or next_b is not None else None,
+        )
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        saved_a, saved_b = self.saved_tensors()
+        out: list[tuple[Node, Tensor]] = []
+        next_a, next_b = self.next_functions
+        if next_a is not None:
+            quot = _wrap(
+                _call_engine(
+                    _engine.broadcast_div, grad_output._core, saved_b._core
+                )
+            )
+            if quot.shape == self.shape_a:
+                grad_a = quot
+            else:
+                grad_a = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, quot._core, self.shape_a
+                    )
+                )
+            out.append((next_a, grad_a))
+        if next_b is not None:
+            neg_grad = _wrap(_call_engine(_engine.neg, grad_output._core))
+            neg_grad_a = _wrap(
+                _call_engine(
+                    _engine.broadcast_mul, neg_grad._core, saved_a._core
+                )
+            )
+            b_sq = _wrap(
+                _call_engine(
+                    _engine.broadcast_mul, saved_b._core, saved_b._core
+                )
+            )
+            quot = _wrap(
+                _call_engine(
+                    _engine.broadcast_div, neg_grad_a._core, b_sq._core
+                )
+            )
+            if quot.shape == self.shape_b:
+                grad_b = quot
+            else:
+                grad_b = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, quot._core, self.shape_b
+                    )
+                )
+            out.append((next_b, grad_b))
+        return out
+
+
 def input_node(tensor: Tensor) -> Node | None:
     """Node to wire as the upstream of an op that used `tensor`.
 
@@ -403,6 +486,15 @@ def record_mul(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
     if next_a is None and next_b is None:
         return result
     return attach(result, MulBackward(next_a, next_b, a, b))
+
+
+def record_div(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
+    """Attach a DivBackward node when either input requires grad."""
+    next_a = input_node(a)
+    next_b = input_node(b)
+    if next_a is None and next_b is None:
+        return result
+    return attach(result, DivBackward(next_a, next_b, a, b))
 
 
 def _ones_like_seed(tensor: Tensor) -> Tensor:

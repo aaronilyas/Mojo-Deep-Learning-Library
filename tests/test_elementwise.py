@@ -17,6 +17,7 @@ OPS = {
     "add": operator.add,
     "mul": operator.mul,
     "sub": operator.sub,
+    "div": operator.truediv,
 }
 
 BROADCAST_CASES = [

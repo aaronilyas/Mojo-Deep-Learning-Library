@@ -2,8 +2,8 @@
 
 Reference kernels and Meta versions share `broadcast_out_shape`. The binary
 loop is one internal helper parametrized by op code so `-`, `/` are thin
-wrappers; `broadcast_add`, `broadcast_mul`, and `broadcast_sub` are exposed.
-Unary `neg` supports sub backward.
+wrappers; `broadcast_add`, `broadcast_mul`, `broadcast_sub`, and
+`broadcast_div` are exposed. Unary `neg` supports sub / div backward.
 """
 
 from std.python import PythonObject
@@ -19,7 +19,7 @@ from ops import (
 from tensor_core import Tensor, _row_major_strides, _nbytes_for_shape
 
 # Op codes for the shared broadcasting binary kernel.
-# 0 = add; 1 = sub; 2 = mul; later: 3 = div.
+# 0 = add; 1 = sub; 2 = mul; 3 = div.
 
 
 def _apply_binop(op: Int, x: Float32, y: Float32) raises -> Float32:
@@ -30,6 +30,8 @@ def _apply_binop(op: Int, x: Float32, y: Float32) raises -> Float32:
         return x - y
     if op == 2:  # mul
         return x * y
+    if op == 3:  # div (IEEE fp32: /0 yields inf/nan)
+        return x / y
     raise Error("internal: unknown elementwise op code")
 
 
@@ -175,6 +177,11 @@ def broadcast_sub(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObje
 def broadcast_mul(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
     """Broadcasting elementwise multiply: Reference kernel or Meta version."""
     return _broadcast_binop(a_obj, b_obj, 2, "multiply")  # op 2 = mul
+
+
+def broadcast_div(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
+    """Broadcasting elementwise divide: Reference kernel or Meta version."""
+    return _broadcast_binop(a_obj, b_obj, 3, "divide")  # op 3 = div
 
 
 def _neg_out_shape(in_shape: List[Int]) -> List[Int]:

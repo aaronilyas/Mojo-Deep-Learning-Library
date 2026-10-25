@@ -19,6 +19,7 @@ from ops_elementwise import (
     broadcast_add,
     broadcast_sub,
     broadcast_mul,
+    broadcast_div,
     neg,
     reduce_to_shape,
 )
@@ -87,6 +88,10 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[broadcast_mul](
             "broadcast_mul",
             docstring="Broadcasting elementwise multiply Reference kernel / Meta version.",
+        )
+        m.def_function[broadcast_div](
+            "broadcast_div",
+            docstring="Broadcasting elementwise divide Reference kernel / Meta version.",
         )
         m.def_function[neg](
             "neg",

@@ -260,6 +260,19 @@ class Tensor:
     def __rmul__(self, other):
         return NotImplemented
 
+    def __truediv__(self, other):
+        if not isinstance(other, Tensor):
+            return NotImplemented
+        from . import autograd
+
+        result = Tensor._from_core(
+            _call_engine(_engine.broadcast_div, self._core, other._core)
+        )
+        return autograd.record_div(result, self, other)
+
+    def __rtruediv__(self, other):
+        return NotImplemented
+
     def sum(self):
         """Reduce all elements to a scalar tensor (shape ())."""
         from . import autograd
