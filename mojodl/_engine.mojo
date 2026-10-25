@@ -8,7 +8,11 @@ Tensor, through the accounting layer.
 from std.python import PythonObject, Python
 from std.python.bindings import PythonModuleBuilder
 from std.os import abort
-from accounting import Accounting
+from accounting import (
+    Accounting,
+    memory_stats,
+    reset_peak_memory_stats,
+)
 from tensor_core import Tensor
 
 
@@ -24,6 +28,14 @@ def PyInit__engine() abi("C") -> PythonObject:
             .def_method[Tensor.copy_to]("copy_to")
         )
         m.def_function[answer]("answer", docstring="Return the answer to everything.")
+        m.def_function[memory_stats](
+            "memory_stats",
+            docstring="Return current and peak tensor memory in bytes.",
+        )
+        m.def_function[reset_peak_memory_stats](
+            "reset_peak_memory_stats",
+            docstring="Set peak tensor memory equal to the current live count.",
+        )
         var mod = m.finalize()
         var acct = Accounting(0, 0)
         Python.add_object(mod, "_accounting", PythonObject(alloc=acct^))

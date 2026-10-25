@@ -14,8 +14,8 @@ from std.python import PythonObject, Python
 struct Accounting(Movable, Writable):
     """Process-wide tensor memory counters.
 
-    Owned by the `_engine` module as a singleton Mojo value. Not part of the
-    public Python API yet; later `memory_stats()` will read these fields.
+    Owned by the `_engine` module as a singleton Mojo value. Public Python
+    `memory_stats()` / `reset_peak_memory_stats()` read and update these fields.
     """
 
     var current: Int
@@ -32,10 +32,26 @@ def _accounting_ptr() raises -> Pointer[Accounting, MutUnsafeAnyOrigin]:
     return eng._accounting.downcast_value_ptr[Accounting]()
 
 
+def memory_stats() raises -> PythonObject:
+    """Return {"current_bytes": int, "peak_bytes": int} from the Mojo counters."""
+    var acct = _accounting_ptr()
+    var d = Python.dict()
+    d["current_bytes"] = PythonObject(acct[].current)
+    d["peak_bytes"] = PythonObject(acct[].peak)
+    return d
+
+
+def reset_peak_memory_stats() raises:
+    """Set peak_bytes equal to the current live byte count."""
+    var acct = _accounting_ptr()
+    acct[].peak = acct[].current
+
+
 def accounted_alloc(nbytes: Int) raises -> Pointer[UInt8, MutUntrackedOrigin]:
     """Allocate `nbytes` via the platform allocator and record them.
 
     Raises if `nbytes` is not positive. Updates current and peak counters.
+    Counter update failures propagate (not swallowed).
     """
     if nbytes < 1:
         raise Error("accounted_alloc: nbytes must be positive")
@@ -52,8 +68,9 @@ def accounted_free(
 ):
     """Free storage previously returned by accounted_alloc and debit the count.
 
-    Non-raising so Tensor.__deinit__ can call it. If the accounting singleton
-    is already gone (interpreter shutdown), storage is still freed.
+    Non-raising so Tensor.__deinit__ can call it. Counter update failures are
+    swallowed only when the accounting singleton is already gone (interpreter
+    shutdown); storage is still freed in that case.
     """
     if nbytes < 1:
         return
@@ -62,4 +79,5 @@ def accounted_free(
         var acct = _accounting_ptr()
         acct[].current -= nbytes
     except e:
+        # Interpreter teardown: _engine / _accounting may already be gone.
         pass
