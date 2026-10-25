@@ -9,6 +9,7 @@ device. Leaves are reached through AccumulateGrad, which holds the leaf.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -18,6 +19,30 @@ if TYPE_CHECKING:
 # device_code values match the engine / Python veneer.
 _DEVICE_CPU = 0
 _DEVICE_META = 1
+
+# Process-wide grad mode (PyTorch-style). Checked on the shared recording path.
+_grad_enabled: bool = True
+
+
+def is_grad_enabled() -> bool:
+    """Return whether ops currently record into the autograd graph."""
+    return _grad_enabled
+
+
+@contextmanager
+def no_grad():
+    """Disable grad recording for the duration of the ``with`` block.
+
+    Restores the previous mode on exit, including when the block raises.
+    Nesting is supported.
+    """
+    global _grad_enabled
+    prev = _grad_enabled
+    _grad_enabled = False
+    try:
+        yield
+    finally:
+        _grad_enabled = prev
 
 _FREED_SAVED_MSG = (
     "Trying to backward through the graph a second time "
@@ -211,8 +236,9 @@ def input_node(tensor: Tensor) -> Node | None:
     Non-grad tensors contribute nothing. Results with a grad_fn reuse that
     node. Leaves get a fresh AccumulateGrad that holds the leaf (the leaf
     itself does not point at the node, so there is no reference cycle).
+    When grad mode is off, always returns None so record_* skip node creation.
     """
-    if not tensor.requires_grad:
+    if not _grad_enabled or not tensor.requires_grad:
         return None
     if tensor.grad_fn is not None:
         return tensor.grad_fn
@@ -222,10 +248,11 @@ def input_node(tensor: Tensor) -> Node | None:
 def attach(result: Tensor, grad_fn: Node | None) -> Tensor:
     """Shared recording helper: every Tensor op calls this with its result node.
 
-    When `grad_fn` is None the result is left as a non-grad tensor. Otherwise
-    the result requires grad, is not a leaf, and carries `grad_fn`.
+    When grad mode is off or `grad_fn` is None the result is left as a
+    non-grad leaf. Otherwise the result requires grad, is not a leaf, and
+    carries `grad_fn`.
     """
-    if grad_fn is None:
+    if not _grad_enabled or grad_fn is None:
         return result
     result._requires_grad = True
     result._grad_fn = grad_fn

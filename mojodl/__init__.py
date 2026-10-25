@@ -250,6 +250,20 @@ class Tensor:
         autograd.backward(self, retain_graph=retain_graph)
 
 
+def no_grad():
+    """Disable grad recording for the duration of the ``with`` block."""
+    from . import autograd
+
+    return autograd.no_grad()
+
+
+def is_grad_enabled() -> bool:
+    """Return whether ops currently record into the autograd graph."""
+    from . import autograd
+
+    return autograd.is_grad_enabled()
+
+
 __all__ = [
     "Tensor",
     "float32",
@@ -259,4 +273,6 @@ __all__ = [
     "AutogradError",
     "memory_stats",
     "reset_peak_memory_stats",
+    "no_grad",
+    "is_grad_enabled",
 ]
