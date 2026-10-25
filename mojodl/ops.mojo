@@ -8,22 +8,9 @@ ships a Reference kernel and a Meta version that share output-shape logic.
 from std.memory import Pointer
 from std.python import PythonObject
 from accounting import accounted_alloc
-from tensor_core import Tensor, _row_major_strides
+from tensor_core import Tensor, _row_major_strides, _format_shape, _nbytes_for_shape
 
 # device_code values match tensor_core: 0 = cpu, 1 = meta
-
-
-def _format_shape(shape: List[Int]) -> String:
-    """Format a shape as a Python-tuple-like string, e.g. "(2, 3)" or "(7,)"."""
-    var s = String("(")
-    for i in range(len(shape)):
-        if i > 0:
-            s += ", "
-        s += String(shape[i])
-    if len(shape) == 1:
-        s += ","
-    s += ")"
-    return s
 
 
 def _shapes_equal(a: List[Int], b: List[Int]) -> Bool:
@@ -93,6 +80,8 @@ def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
 
     var out_shape = _checked_out_shape(a[].shape, b[].shape)
     var out_strides = _row_major_strides(out_shape)
+    # Size from shape (cpu and meta); overflow raises before allocation.
+    var nbytes = _nbytes_for_shape(out_shape)
 
     if a_dev == 1:  # meta
         var meta_result = Tensor(
@@ -105,7 +94,6 @@ def add(a_obj: PythonObject, b_obj: PythonObject) raises -> PythonObject:
         )
         return PythonObject(alloc=meta_result^)
 
-    var nbytes = a[].nbytes
     var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     if nbytes < 1:
         data = None

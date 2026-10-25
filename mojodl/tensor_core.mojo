@@ -31,12 +31,43 @@ def _row_major_strides(shape: List[Int]) -> List[Int]:
     return strides^
 
 
-def _nelem(shape: List[Int]) -> Int:
-    """Number of elements in a dense shape (0-d is 1 element)."""
-    var n = 1
+def _format_shape(shape: List[Int]) -> String:
+    """Format a shape as a Python-tuple-like string, e.g. "(2, 3)" or "(7,)"."""
+    var s = String("(")
     for i in range(len(shape)):
-        n *= shape[i]
-    return n
+        if i > 0:
+            s += ", "
+        s += String(shape[i])
+    if len(shape) == 1:
+        s += ","
+    s += ")"
+    return s
+
+
+def _nbytes_for_shape(shape: List[Int]) raises -> Int:
+    """fp32 byte count for a dense shape, with overflow detection.
+
+    0-d shapes are 1 element (4 bytes). Raises a tagged OverflowError when
+    the element count or byte size would exceed Int.MAX, before any
+    allocation. Message names the offending shape.
+    """
+    var nelem = 1
+    for i in range(len(shape)):
+        var d = shape[i]
+        if d != 0 and nelem > Int.MAX // d:
+            raise Error(
+                "OverflowError: shape "
+                + _format_shape(shape)
+                + " exceeds the maximum tensor size"
+            )
+        nelem *= d
+    if nelem != 0 and nelem > Int.MAX // 4:
+        raise Error(
+            "OverflowError: shape "
+            + _format_shape(shape)
+            + " exceeds the maximum tensor size"
+        )
+    return nelem * 4
 
 
 @fieldwise_init
@@ -83,12 +114,9 @@ struct Tensor(Movable, Writable):
         var shape_obj = arr.shape
         var ndim = len(shape_obj)
         var shape = List[Int](capacity=Int(ndim))
-        var nelem = 1
         for i in range(ndim):
-            var d = Int(py=shape_obj[i])
-            shape.append(d)
-            nelem *= d
-        var nbytes = nelem * 4  # float32
+            shape.append(Int(py=shape_obj[i]))
+        var nbytes = _nbytes_for_shape(shape)
         var strides = _row_major_strides(shape)
 
         var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
@@ -159,13 +187,16 @@ def empty(shape_obj: PythonObject, device_code_obj: PythonObject) raises -> Pyth
         shape.append(Int(py=shape_obj[i]))
     var strides = _row_major_strides(shape)
 
+    # Validate size for both cpu and meta before any allocation.
+    var nbytes_checked = _nbytes_for_shape(shape)
+
     var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     var nbytes: Int
     if device_code == 1:  # meta
         data = None
         nbytes = 0
     else:
-        nbytes = _nelem(shape) * 4
+        nbytes = nbytes_checked
         if nbytes < 1:
             data = None
         else:

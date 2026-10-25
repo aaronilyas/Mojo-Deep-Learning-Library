@@ -24,19 +24,23 @@ class DeviceError(ValueError):
 
 
 # Mojo raises Error with a stable type tag in the message; map tags here so
-# later ops (budget errors, etc.) share one remapping path.
+# later ops (budget errors, etc.) share one remapping path. Tag prefixes are
+# stripped so public exception messages stay clean.
 _MOJO_ERROR_TAGS: tuple[tuple[str, type[Exception]], ...] = (
     ("mojodl.ShapeError:", ShapeError),
     ("mojodl.DeviceError:", DeviceError),
+    ("OverflowError:", OverflowError),
 )
 
 
 def _map_mojo_error(exc: BaseException) -> BaseException:
-    """Translate a tagged Mojo Error into a public mojodl exception."""
+    """Translate a tagged Mojo Error into a public exception (tag stripped)."""
     msg = str(exc)
     for tag, cls in _MOJO_ERROR_TAGS:
         if tag in msg:
-            return cls(msg)
+            idx = msg.find(tag)
+            clean = msg[idx + len(tag) :].lstrip()
+            return cls(clean)
     return exc
 
 
