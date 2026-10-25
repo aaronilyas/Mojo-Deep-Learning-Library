@@ -15,6 +15,7 @@ from accounting import (
 )
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
+from ops_linalg import matmul, matmul_nt, matmul_tn
 
 
 @export
@@ -68,6 +69,18 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[clone](
             "clone",
             docstring="Deep-copy a tensor for owned leaf .grad buffers.",
+        )
+        m.def_function[matmul](
+            "matmul",
+            docstring="2-D matmul Reference kernel / Meta version.",
+        )
+        m.def_function[matmul_nt](
+            "matmul_nt",
+            docstring="a @ b.T without materializing transpose (matmul backward).",
+        )
+        m.def_function[matmul_tn](
+            "matmul_tn",
+            docstring="a.T @ b without materializing transpose (matmul backward).",
         )
 
         var mod = m.finalize()
