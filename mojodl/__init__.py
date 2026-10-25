@@ -274,6 +274,13 @@ class Tensor:
         result = Tensor._from_core(_call_engine(_engine.relu, self._core))
         return autograd.record_relu(result, self)
 
+    def exp(self):
+        """Elementwise exponential: e^x."""
+        from . import autograd
+
+        result = Tensor._from_core(_call_engine(_engine.exp, self._core))
+        return autograd.record_exp(result, self)
+
     def backward(self, retain_graph: bool = False) -> None:
         """Compute gradients of this tensor w.r.t. leaves that require grad.
 
@@ -307,6 +314,11 @@ def relu(x: Tensor) -> Tensor:
     return x.relu()
 
 
+def exp(x: Tensor) -> Tensor:
+    """Elementwise exponential: e^x. Equivalent to ``x.exp()``."""
+    return x.exp()
+
+
 __all__ = [
     "Tensor",
     "float32",
@@ -319,4 +331,5 @@ __all__ = [
     "no_grad",
     "is_grad_enabled",
     "relu",
+    "exp",
 ]

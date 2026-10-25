@@ -366,6 +366,44 @@ def record_relu(result: Tensor, inp: Tensor) -> Tensor:
     return attach(result, ReluBackward(nxt, inp))
 
 
+class ExpBackward(Node):
+    """Exp: grad_in = grad * exp(x), using the saved forward output.
+
+    Saves a fresh non-grad Tensor wrapping the result's engine core so the
+    result object itself is not held (avoids result → grad_fn → saved → result).
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
+
+    def __init__(self, next_x: Node, saved_out: Tensor):
+        self.next_functions = (next_x,)
+        self.save_for_backward(saved_out)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        (saved_out,) = self.saved_tensors()
+        grad_x = _wrap(
+            _call_engine(_engine.mul, grad_output._core, saved_out._core)
+        )
+        return [(self.next_functions[0], grad_x)]
+
+
+def record_exp(result: Tensor, inp: Tensor) -> Tensor:
+    """Attach an ExpBackward node when `inp` requires grad.
+
+    Saves ``Tensor._from_core(result._core)`` (same storage, no grad_fn) so
+    dropping ``result`` can free its storage by refcounting.
+    """
+    from . import Tensor
+
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    saved_out = Tensor._from_core(result._core)
+    return attach(result, ExpBackward(nxt, saved_out))
+
+
 def _ones_like_seed(tensor: Tensor) -> Tensor:
     """Engine-created ones tensor with the output's shape and device (seed grad)."""
     from . import _engine

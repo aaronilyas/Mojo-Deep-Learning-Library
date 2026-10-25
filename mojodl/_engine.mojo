@@ -16,7 +16,7 @@ from accounting import (
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
 from ops_linalg import matmul, matmul_nt, matmul_tn
-from ops_activation import relu, relu_backward
+from ops_activation import relu, relu_backward, exp
 
 
 @export
@@ -90,6 +90,10 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[relu_backward](
             "relu_backward",
             docstring="ReLU backward: grad where x > 0 else 0 (Reference / Meta).",
+        )
+        m.def_function[exp](
+            "exp",
+            docstring="Elementwise exp Reference kernel / Meta version.",
         )
 
         var mod = m.finalize()
