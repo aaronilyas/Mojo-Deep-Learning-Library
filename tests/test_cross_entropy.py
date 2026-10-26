@@ -313,3 +313,175 @@ def test_cross_entropy_meta_backward_fills_meta_grad_without_allocating():
     after = mojodl.memory_stats()
     assert after["current_bytes"] == before["current_bytes"]
     assert after["peak_bytes"] == before["peak_bytes"]
+
+
+# ---------------------------------------------------------------------------
+# errors: LabelError, ShapeError, DeviceError, TypeError
+# ---------------------------------------------------------------------------
+
+
+def test_label_error_is_value_error_and_index_error():
+    assert issubclass(mojodl.LabelError, ValueError)
+    assert issubclass(mojodl.LabelError, IndexError)
+    assert "LabelError" in mojodl.__all__
+
+
+@pytest.mark.parametrize(
+    "labels_np,needles",
+    [
+        (
+            np.array([0, 1, 5, 2], dtype=np.float32),
+            ("label 5", "3 classes", "index 2"),
+        ),
+        (
+            np.array([0, -1, 1, 2], dtype=np.float32),
+            ("label -1", "3 classes"),
+        ),
+        (
+            np.array([3, 0, 0, 0], dtype=np.float32),
+            ("label 3",),
+        ),
+    ],
+    ids=["oob_5", "negative", "label_eq_C"],
+)
+def test_cross_entropy_out_of_range_label_raises_label_error(labels_np, needles):
+    logits = mojodl.Tensor(np.zeros((4, 3), dtype=np.float32))
+    labels = mojodl.Tensor(labels_np)
+
+    with pytest.raises(mojodl.LabelError) as exc_info:
+        mojodl.cross_entropy(logits, labels)
+
+    assert isinstance(exc_info.value, ValueError)
+    assert isinstance(exc_info.value, IndexError)
+    msg = str(exc_info.value)
+    for needle in needles:
+        assert needle in msg
+
+
+def test_cross_entropy_non_integral_label_raises_label_error():
+    logits = mojodl.Tensor(np.zeros((4, 3), dtype=np.float32))
+    labels = mojodl.Tensor(np.array([0, 1.5, 1, 2], dtype=np.float32))
+
+    with pytest.raises(mojodl.LabelError) as exc_info:
+        mojodl.cross_entropy(logits, labels)
+
+    assert "1.5" in str(exc_info.value)
+
+
+def test_cross_entropy_nan_label_raises_label_error():
+    logits = mojodl.Tensor(np.zeros((4, 3), dtype=np.float32))
+    labels = mojodl.Tensor(
+        np.array([0, float("nan"), 1, 2], dtype=np.float32)
+    )
+
+    with pytest.raises(mojodl.LabelError) as exc_info:
+        mojodl.cross_entropy(logits, labels)
+
+    assert "nan" in str(exc_info.value).lower()
+
+
+@pytest.mark.parametrize(
+    "requires_grad",
+    [False, True],
+    ids=["plain", "requires_grad"],
+)
+def test_cross_entropy_bad_labels_do_not_allocate(requires_grad):
+    logits = mojodl.Tensor(
+        np.zeros((4, 3), dtype=np.float32), requires_grad=requires_grad
+    )
+    labels = mojodl.Tensor(np.array([0, 1, 5, 2], dtype=np.float32))
+    gc.collect()
+    baseline = mojodl.memory_stats()["current_bytes"]
+
+    with pytest.raises(mojodl.LabelError):
+        mojodl.cross_entropy(logits, labels)
+
+    gc.collect()
+    assert mojodl.memory_stats()["current_bytes"] == baseline
+
+
+@pytest.mark.parametrize(
+    "logits_shape,labels_shape",
+    [
+        ((3,), (3,)),
+        ((2, 3, 4), (2,)),
+        ((4, 3), (3,)),
+        ((4, 3), (4, 1)),
+    ],
+    ids=["logits_1d", "logits_3d", "batch_mismatch", "labels_2d"],
+)
+def test_cross_entropy_bad_shapes_raise_shape_error(logits_shape, labels_shape):
+    logits = mojodl.Tensor(np.zeros(logits_shape, dtype=np.float32))
+    labels = mojodl.Tensor(np.zeros(labels_shape, dtype=np.float32))
+
+    with pytest.raises(mojodl.ShapeError) as exc_info:
+        mojodl.cross_entropy(logits, labels)
+
+    if logits_shape == (4, 3) and labels_shape == (3,):
+        msg = str(exc_info.value)
+        assert "(4, 3)" in msg
+        assert "(3,)" in msg
+
+
+def test_cross_entropy_meta_shape_mismatch_raises_shape_error():
+    logits = mojodl.empty((4, 3), device="meta")
+    labels = mojodl.empty((3,), device="meta")
+
+    with pytest.raises(mojodl.ShapeError):
+        mojodl.cross_entropy(logits, labels)
+
+
+@pytest.mark.parametrize(
+    "logits_device,labels_device",
+    [
+        ("cpu", "meta"),
+        ("meta", "cpu"),
+    ],
+    ids=["cpu_logits_meta_labels", "meta_logits_cpu_labels"],
+)
+def test_cross_entropy_mixed_devices_raise_device_error(
+    logits_device, labels_device
+):
+    if logits_device == "cpu":
+        logits = mojodl.Tensor(np.zeros((4, 3), dtype=np.float32))
+    else:
+        logits = mojodl.empty((4, 3), device="meta")
+    if labels_device == "cpu":
+        labels = mojodl.Tensor(np.zeros((4,), dtype=np.float32))
+    else:
+        labels = mojodl.empty((4,), device="meta")
+
+    with pytest.raises(mojodl.DeviceError):
+        mojodl.cross_entropy(logits, labels)
+
+    del logits, labels
+    gc.collect()
+
+
+def test_cross_entropy_labels_list_raises_type_error():
+    logits = mojodl.Tensor(np.zeros((4, 3), dtype=np.float32))
+
+    with pytest.raises(TypeError) as exc_info:
+        mojodl.cross_entropy(logits, [0, 1, 2, 1])
+
+    assert "cross_entropy" in str(exc_info.value)
+
+
+def test_cross_entropy_labels_numpy_raises_type_error():
+    logits = mojodl.Tensor(np.zeros((4, 3), dtype=np.float32))
+    labels = np.array([0, 1, 2, 1], dtype=np.float32)
+
+    with pytest.raises(TypeError) as exc_info:
+        mojodl.cross_entropy(logits, labels)
+
+    assert "cross_entropy" in str(exc_info.value)
+
+
+def test_cross_entropy_logits_numpy_raises_type_error():
+    logits = np.zeros((4, 3), dtype=np.float32)
+    labels = mojodl.Tensor(np.array([0, 1, 2, 1], dtype=np.float32))
+
+    with pytest.raises(TypeError) as exc_info:
+        mojodl.cross_entropy(logits, labels)
+
+    assert "cross_entropy" in str(exc_info.value)

@@ -51,34 +51,53 @@ def _validate_cross_entropy_labels(
     """Reject non-integral or out-of-range class indices before any indexing.
 
     Shared by forward and backward cpu paths so neither can out-of-bounds-read
-    labels. Empty batch (n < 1) is a no-op.
+    labels. Empty batch (n < 1) is a no-op. Raises tagged LabelError; integral
+    labels print as integers, oversized / non-finite values use the float
+    string without an overflowing Int conversion.
     """
     if n < 1:
         return
     var labels = labels_obj.downcast_value_ptr[Tensor]()
     var labels_f = labels[].data.value().unsafe_bitcast[Float32]()
-    var c_f = Float32(c)
+    # Bound for a safe Float32→Int cast (avoids overflow on 1e30 / ±inf).
+    var max_safe = Float32(2147483648.0)  # 2^31
     for i in range(n):
         var v = labels_f[unsafe_offset=i]
-        # NaN is not equal to itself; also reject non-integral / out of range.
-        var bad = v != v
-        if not bad:
-            if v < Float32(0.0) or v >= c_f:
-                bad = True
-            else:
-                var yi_check = Int(v)
-                if Float32(yi_check) != v:
-                    bad = True
-        if bad:
+        # NaN is not equal to itself.
+        if v != v:
             raise Error(
-                "cross_entropy: label "
+                "mojodl.LabelError: label "
                 + String(v)
                 + " at index "
                 + String(i)
-                + " is not an integral class index in [0, "
+                + " is not an integer class index ("
                 + String(c)
-                + ")"
+                + " classes)"
             )
+        # Only convert when |v| is safely inside Int range; else keep float text.
+        if v > -max_safe and v < max_safe:
+            var yi = Int(v)
+            if Float32(yi) == v:
+                if yi < 0 or yi >= c:
+                    raise Error(
+                        "mojodl.LabelError: label "
+                        + String(yi)
+                        + " at index "
+                        + String(i)
+                        + " is out of range for "
+                        + String(c)
+                        + " classes"
+                    )
+                continue
+        raise Error(
+            "mojodl.LabelError: label "
+            + String(v)
+            + " at index "
+            + String(i)
+            + " is not an integer class index ("
+            + String(c)
+            + " classes)"
+        )
 
 
 def cross_entropy(
