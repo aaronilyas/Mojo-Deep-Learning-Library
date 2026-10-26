@@ -1,16 +1,18 @@
-"""PyTorch-shaped ``nn.Module`` and ``nn.Parameter`` for mojodl.
+"""PyTorch-shaped ``nn.Module``, ``nn.Parameter``, and basic layers for mojodl.
 
 Registration, named traversal, and ``__call__`` → ``forward`` match the
-PyTorch CPU oracle used by ``tests/test_nn_module.py``. Linear / ReLU /
-Sequential, buffers, hooks, and train/eval are intentionally out of scope.
+PyTorch CPU oracle. ``Linear``, ``ReLU``, and ``Sequential`` compose existing
+autograd-tracked ops (no new engine kernels). Buffers, hooks, and train/eval
+are intentionally out of scope.
 """
 
 from __future__ import annotations
 
+import math
 from collections import OrderedDict
 from typing import Iterator
 
-from . import Tensor
+from . import Tensor, no_grad, ones, rand, zeros
 
 
 class Parameter(Tensor):
@@ -221,4 +223,108 @@ class Module:
             yield param
 
 
-__all__ = ["Parameter", "Module"]
+def _require_nonneg_int(name: str, value) -> int:
+    """Validate a Linear size argument: non-negative int, bool rejected."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(
+            f"Linear(): {name} must be an int, got {type(value).__name__}"
+        )
+    if value < 0:
+        raise ValueError(f"Linear(): {name} must be non-negative, got {value}")
+    return value
+
+
+def _uniform_parameter(shape, bound: float, device: str, seed):
+    """Parameter ~ U(-bound, bound) from engine ``rand``, under ``no_grad``.
+
+    Meta keeps the affine on Meta tensors so construction allocates nothing.
+    CPU builds scalar scale/shift Tensors and maps U(0, 1) → U(-bound, bound).
+    """
+    with no_grad():
+        u = rand(shape, device=device, seed=seed)
+        if device == "meta":
+            scale = ones((), device="meta")
+            shift = zeros((), device="meta")
+        else:
+            scale = Tensor([2.0 * bound])
+            shift = Tensor([-bound])
+        data = u * scale + shift
+    return Parameter(data)
+
+
+class Linear(Module):
+    """Affine transform: ``y = x @ weight.T (+ bias)`` for 2-D ``x``.
+
+    Weight shape is ``(out_features, in_features)``; bias shape is
+    ``(out_features,)`` when ``bias=True``. Init matches PyTorch's default
+    uniform bound ``1/sqrt(in_features)``. Forward uses existing matmul,
+    transpose, and add so autograd tracks weight, bias, and input.
+    """
+
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        bias: bool = True,
+        *,
+        device: str = "cpu",
+        seed=None,
+    ):
+        super().__init__()
+        in_features = _require_nonneg_int("in_features", in_features)
+        out_features = _require_nonneg_int("out_features", out_features)
+        self.in_features = in_features
+        self.out_features = out_features
+        bound = (
+            1.0 / math.sqrt(in_features) if in_features > 0 else 0.0
+        )
+        self.weight = _uniform_parameter(
+            (out_features, in_features), bound, device, seed
+        )
+        if bias:
+            # Distinct stream from weight when seed is an int; fresh draw if None.
+            bias_seed = None if seed is None else (seed + 1) % (2**64)
+            self.bias = _uniform_parameter(
+                (out_features,), bound, device, bias_seed
+            )
+        else:
+            self.bias = None
+
+    def forward(self, x):
+        out = x @ self.weight.transpose(0, 1)
+        if self.bias is not None:
+            out = out + self.bias
+        return out
+
+
+class ReLU(Module):
+    """Elementwise ReLU module; no parameters."""
+
+    def forward(self, x):
+        return x.relu()
+
+
+class Sequential(Module):
+    """Chains child modules in registration order under names ``\"0\"``, ``\"1\"``, ..."""
+
+    def __init__(self, *modules):
+        super().__init__()
+        for i, module in enumerate(modules):
+            setattr(self, str(i), module)
+
+    def __len__(self) -> int:
+        return len(self._modules)
+
+    def __iter__(self) -> Iterator[Module]:
+        return iter(self._modules.values())
+
+    def __getitem__(self, idx: int) -> Module:
+        return list(self._modules.values())[idx]
+
+    def forward(self, x):
+        for module in self:
+            x = module(x)
+        return x
+
+
+__all__ = ["Parameter", "Module", "Linear", "ReLU", "Sequential"]
