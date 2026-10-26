@@ -643,3 +643,30 @@ __all__ = [
     "softmax",
     "log_softmax",
 ]
+
+
+def cross_entropy(logits: Tensor, labels: Tensor) -> Tensor:
+    """Mean cross-entropy loss over a batch of class logits.
+
+    Parameters
+    ----------
+    logits:
+        Rank-2 tensor of shape ``(N, C)`` (batch size N, C classes).
+    labels:
+        Tensor of integral class indices in ``[0, C)``, shape ``(N,)``,
+        same device as ``logits`` (fp32 storage).
+
+    Returns
+    -------
+    Tensor
+        A 0-d fp32 tensor holding the mean loss
+        ``(1/N) * Σ_i (logsumexp(logits[i]) - logits[i, labels[i]])``.
+        Empty batch (``N == 0``) yields NaN.
+    """
+    return Tensor._from_core(
+        _call_engine(_engine.cross_entropy, logits._core, labels._core)
+    )
+
+
+__all__ += ["cross_entropy"]
+
