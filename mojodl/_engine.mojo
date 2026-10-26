@@ -38,6 +38,7 @@ from ops_elementwise import (
     reduce_to_shape,
 )
 from ops_constructors import zeros, rand, randn
+from ops_cross_entropy import cross_entropy, cross_entropy_backward
 
 
 @export
@@ -199,6 +200,14 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[randn](
             "randn",
             docstring="Create a standard-normal cpu Tensor or a Meta tensor.",
+        )
+        m.def_function[cross_entropy](
+            "cross_entropy",
+            docstring="Mean cross-entropy Reference kernel / Meta version.",
+        )
+        m.def_function[cross_entropy_backward](
+            "cross_entropy_backward",
+            docstring="Cross-entropy logits gradient Reference kernel / Meta version.",
         )
 
         var mod = m.finalize()

@@ -654,3 +654,60 @@ __all__.append("StateDictError")
 from .loss_mse import mse_loss
 
 __all__.append("mse_loss")
+
+def cross_entropy(logits: Tensor, labels: Tensor) -> Tensor:
+    """Mean cross-entropy loss over a batch of class logits.
+
+    Parameters
+    ----------
+    logits:
+        Rank-2 tensor of shape ``(N, C)`` (batch size N, C classes).
+    labels:
+        Tensor of integral class indices in ``[0, C)``, shape ``(N,)``,
+        same device as ``logits`` (fp32 storage).
+
+    Returns
+    -------
+    Tensor
+        A 0-d fp32 tensor holding the mean loss
+        ``(1/N) * Σ_i (logsumexp(logits[i]) - logits[i, labels[i]])``.
+        Empty batch (``N == 0``) yields NaN.
+
+    Raises
+    ------
+    TypeError
+        If ``logits`` or ``labels`` is not a ``mojodl.Tensor``.
+    ShapeError
+        If shapes are not ``(N, C)`` and ``(N,)``.
+    DeviceError
+        If ``logits`` and ``labels`` are on different devices.
+    LabelError
+        If a label is non-integral or outside ``[0, C)``.
+    """
+    if not isinstance(logits, Tensor):
+        raise TypeError(
+            f"cross_entropy(): logits must be a mojodl.Tensor, got {type(logits).__name__}"
+        )
+    if not isinstance(labels, Tensor):
+        raise TypeError(
+            f"cross_entropy(): labels must be a mojodl.Tensor, got {type(labels).__name__}"
+        )
+    from . import autograd
+
+    result = Tensor._from_core(
+        _call_engine(_engine.cross_entropy, logits._core, labels._core)
+    )
+    return autograd.record_cross_entropy(result, logits, labels)
+
+
+__all__ += ["cross_entropy"]
+
+
+class LabelError(ValueError, IndexError):
+    """Raised when a label is not a valid class index for the logits."""
+
+
+_MOJO_ERROR_TAGS = _MOJO_ERROR_TAGS + (("mojodl.LabelError:", LabelError),)
+
+__all__ += ["LabelError"]
+
