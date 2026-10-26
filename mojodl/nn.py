@@ -319,6 +319,40 @@ def _require_nonneg_int(name: str, value) -> int:
     return value
 
 
+_MASK64 = (1 << 64) - 1
+# Distinct per-role constants so weight and bias streams never share a seed.
+_SEED_ROLE_WEIGHT = 0x5745494748540001
+_SEED_ROLE_BIAS = 0x4249415300000002
+
+
+def _derive_parameter_seed(seed: int, role: int) -> int:
+    """Map ``(seed, role)`` to a stream seed in ``[0, 2**64)``.
+
+    Combines ``seed`` with a distinct per-role constant, then applies the
+    SplitMix64 finalizer (pure Python int arithmetic, masked to 64 bits).
+    """
+    z = (seed ^ role) & _MASK64
+    z = (z + 0x9E3779B97F4A7C15) & _MASK64
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & _MASK64
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & _MASK64
+    return (z ^ (z >> 31)) & _MASK64
+
+
+def _validate_linear_seed(seed):
+    """Reject invalid seeds with the same rules as ``mojodl.rand``."""
+    if seed is None:
+        return None
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(
+            f"Linear(): seed must be an int or None, got {type(seed).__name__}"
+        )
+    if seed < 0 or seed >= 2**64:
+        raise ValueError(
+            f"Linear(): seed must be in [0, 2**64), got {seed}"
+        )
+    return seed
+
+
 def _uniform_parameter(shape, bound: float, device: str, seed):
     """Parameter ~ U(-bound, bound) from engine ``rand``, under ``no_grad``.
 
@@ -358,17 +392,22 @@ class Linear(Module):
         super().__init__()
         in_features = _require_nonneg_int("in_features", in_features)
         out_features = _require_nonneg_int("out_features", out_features)
+        seed = _validate_linear_seed(seed)
         self.in_features = in_features
         self.out_features = out_features
         bound = (
             1.0 / math.sqrt(in_features) if in_features > 0 else 0.0
         )
+        if seed is None:
+            weight_seed = None
+            bias_seed = None
+        else:
+            weight_seed = _derive_parameter_seed(seed, _SEED_ROLE_WEIGHT)
+            bias_seed = _derive_parameter_seed(seed, _SEED_ROLE_BIAS)
         self.weight = _uniform_parameter(
-            (out_features, in_features), bound, device, seed
+            (out_features, in_features), bound, device, weight_seed
         )
         if bias:
-            # Distinct stream from weight when seed is an int; fresh draw if None.
-            bias_seed = None if seed is None else (seed + 1) % (2**64)
             self.bias = _uniform_parameter(
                 (out_features,), bound, device, bias_seed
             )

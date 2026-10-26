@@ -405,3 +405,42 @@ def test_sequential_index_out_of_range_raises_indexerror():
         seq[3]
     with pytest.raises(IndexError):
         seq[-4]
+
+
+# ---------------------------------------------------------------------------
+# Linear: seeded layers with nearby integer seeds use non-overlapping streams
+# ---------------------------------------------------------------------------
+
+
+def test_linear_nearby_integer_seeds_draw_non_overlapping_streams():
+    """Seeded Linear weight/bias streams must not collide across nearby seeds.
+
+    Weight and bias are U(-b, b) with b = 1/sqrt(in_features). Map each
+    parameter back to the underlying unit draw via u = (v + b) / (2b), then
+    compare the first 8 flattened values of every weight and bias stream
+    across seeds 0..4. No two prefixes may be allclose.
+    """
+    in_features = 16
+    out_features = 16
+    bound = 1.0 / math.sqrt(in_features)
+    prefix_len = 8
+    seeds = range(5)
+
+    def to_unit_prefix(param):
+        v = param.numpy().reshape(-1)
+        u = (v + bound) / (2.0 * bound)
+        return u[:prefix_len]
+
+    streams = []
+    for s in seeds:
+        lin = mojodl.nn.Linear(in_features, out_features, seed=s)
+        streams.append((f"seed={s}.weight", to_unit_prefix(lin.weight)))
+        streams.append((f"seed={s}.bias", to_unit_prefix(lin.bias)))
+
+    for i in range(len(streams)):
+        for j in range(i + 1, len(streams)):
+            name_i, prefix_i = streams[i]
+            name_j, prefix_j = streams[j]
+            assert not np.allclose(prefix_i, prefix_j, atol=1e-6), (
+                f"colliding random-stream prefixes: {name_i} vs {name_j}"
+            )
