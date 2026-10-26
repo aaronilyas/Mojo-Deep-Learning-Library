@@ -39,6 +39,7 @@ from ops_elementwise import (
 )
 from ops_constructors import zeros, rand, randn
 from ops_cross_entropy import cross_entropy, cross_entropy_backward
+from ops_optim import sgd_step
 
 
 @export
@@ -208,6 +209,10 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[cross_entropy_backward](
             "cross_entropy_backward",
             docstring="Cross-entropy logits gradient Reference kernel / Meta version.",
+        )
+        m.def_function[sgd_step](
+            "sgd_step",
+            docstring="In-place SGD update param -= lr * grad; Reference / Meta.",
         )
 
         var mod = m.finalize()

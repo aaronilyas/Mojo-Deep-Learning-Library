@@ -651,6 +651,11 @@ __all__.append("nn")
 StateDictError = nn.StateDictError
 __all__.append("StateDictError")
 
+from . import optim
+
+__all__.append("optim")
+
+
 from .loss_mse import mse_loss
 
 __all__.append("mse_loss")
