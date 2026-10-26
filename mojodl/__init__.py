@@ -63,6 +63,23 @@ def _call_engine(fn, *args):
         raise mapped from e
 
 
+def _encode_reduce_args(dim, keepdim, method: str) -> tuple[int, int, int]:
+    """Validate/encode dim and keepdim for Tensor.sum / Tensor.mean.
+
+    Raises TypeError naming ``method`` when ``dim`` is bool or a non-int.
+    Returns ``(has_dim, dim_arg, keepdim_arg)`` for the engine call.
+    """
+    if dim is not None:
+        if isinstance(dim, bool) or not isinstance(dim, int):
+            raise TypeError(
+                f"{method}(): dim must be an int or None, got {type(dim).__name__}"
+            )
+    has_dim = 0 if dim is None else 1
+    dim_arg = 0 if dim is None else dim
+    keepdim_arg = 1 if keepdim else 0
+    return has_dim, dim_arg, keepdim_arg
+
+
 class _Float32Dtype:
     """Public dtype tag for contiguous fp32 tensors."""
 
@@ -262,14 +279,7 @@ class Tensor:
         """
         from . import autograd
 
-        if dim is not None:
-            if isinstance(dim, bool) or not isinstance(dim, int):
-                raise TypeError(
-                    f"sum(): dim must be an int or None, got {type(dim).__name__}"
-                )
-        has_dim = 0 if dim is None else 1
-        dim_arg = 0 if dim is None else dim
-        keepdim_arg = 1 if keepdim else 0
+        has_dim, dim_arg, keepdim_arg = _encode_reduce_args(dim, keepdim, "sum")
         result = Tensor._from_core(
             _call_engine(
                 _engine.sum_dim, self._core, dim_arg, has_dim, keepdim_arg
@@ -287,14 +297,7 @@ class Tensor:
         """
         from . import autograd
 
-        if dim is not None:
-            if isinstance(dim, bool) or not isinstance(dim, int):
-                raise TypeError(
-                    f"mean(): dim must be an int or None, got {type(dim).__name__}"
-                )
-        has_dim = 0 if dim is None else 1
-        dim_arg = 0 if dim is None else dim
-        keepdim_arg = 1 if keepdim else 0
+        has_dim, dim_arg, keepdim_arg = _encode_reduce_args(dim, keepdim, "mean")
         result = Tensor._from_core(
             _call_engine(
                 _engine.mean_dim, self._core, dim_arg, has_dim, keepdim_arg

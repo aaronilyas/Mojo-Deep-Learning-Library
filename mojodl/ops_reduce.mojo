@@ -1,7 +1,8 @@
-"""Reference kernels for reductions (sum along axes).
+"""Reference kernels for reductions (sum / mean along axes).
 
 Output-shape / dim checks are shared by the Reference and Meta paths.
-Backward expands the upstream gradient along reduced dimensions.
+Forward accumulation and backward broadcast are each one loop, parameterised
+by whether to scale by 1/count (mean). Empty mean reductions write NaN.
 """
 
 from std.python import PythonObject
@@ -46,7 +47,7 @@ def _normalize_dim(dim: Int, rank: Int) raises -> Int:
 def _sum_out_shape(
     shape: List[Int], has_dim: Bool, dim: Int, keepdim: Bool
 ) raises -> List[Int]:
-    """Shared dim check and output shape for sum Reference and Meta paths.
+    """Shared dim check and output shape for sum/mean Reference and Meta paths.
 
     `has_dim` false means reduce over every axis (dim=None). Otherwise `dim`
     is normalized (negative from the end; 0-d accepts 0 and -1). keepdim keeps
@@ -104,18 +105,19 @@ def _reduced_count(shape: List[Int], has_dim: Bool, dim: Int) raises -> Int:
     return shape[d]
 
 
-def sum_dim(
+def _reduce_dim(
     a_obj: PythonObject,
     dim_obj: PythonObject,
     has_dim_obj: PythonObject,
     keepdim_obj: PythonObject,
+    as_mean: Bool,
 ) raises -> PythonObject:
-    """Sum over all elements or one axis: Reference kernel or Meta version.
+    """Shared sum/mean forward: one Float64 accumulation loop.
 
-    `has_dim_obj` is 0 for dim=None, else 1 with `dim_obj` the axis (may be
-    negative). Output shape comes from `_sum_out_shape`. Cpu accumulates in
-    Float64 per output element; empty reductions write 0.0. Meta returns a
-    Meta tensor of the output shape with no allocation.
+    When `as_mean`, each accumulator is scaled by 1/count before the fp32
+    store; a zero count writes NaN. When not `as_mean`, empty inputs write
+    0.0 and non-empty results are stored unscaled. Meta returns a Meta tensor
+    of the output shape with no allocation.
     """
     var a = a_obj.downcast_value_ptr[Tensor]()
     var a_dev = a[].device_code
@@ -133,143 +135,26 @@ def sum_dim(
     var data = _alloc_fp32_out(nbytes)
     if nbytes >= 1:
         var o_f = data.value().unsafe_bitcast[Float32]()
-        if a[].nbytes < 1:
-            # Empty input / empty reduction axis: every output element is 0.0.
-            var n_out = nbytes // 4
-            for i in range(n_out):
-                o_f[unsafe_offset=i] = Float32(0.0)
-        else:
-            var a_f = a[].data.value().unsafe_bitcast[Float32]()
-            var rank = len(a[].shape)
-            # Whole-tensor or 0-d (single element): one Float64 accumulator.
-            if (not has_dim) or rank == 0:
-                var acc: Float64 = 0.0
-                var n = a[].nbytes // 4
-                for i in range(n):
-                    acc = acc + Float64(a_f[unsafe_offset=i])
-                o_f[unsafe_offset=0] = Float32(acc)
-            else:
-                var d = _normalize_dim(dim, rank)
-                var outer = _product_range(a[].shape, 0, d)
-                var reduced = a[].shape[d]
-                var inner = _product_range(a[].shape, d + 1, rank)
-                for o in range(outer):
-                    for i in range(inner):
-                        var acc: Float64 = 0.0
-                        for r in range(reduced):
-                            var in_idx = (o * reduced + r) * inner + i
-                            acc = acc + Float64(a_f[unsafe_offset=in_idx])
-                        var out_idx = o * inner + i
-                        o_f[unsafe_offset=out_idx] = Float32(acc)
-
-    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
-
-
-def sum_backward(
-    grad_obj: PythonObject,
-    input_shape_obj: PythonObject,
-    dim_obj: PythonObject,
-    has_dim_obj: PythonObject,
-    keepdim_obj: PythonObject,
-) raises -> PythonObject:
-    """Broadcast sum's upstream gradient back to the input shape.
-
-    Shared by whole-tensor and one-axis sum backward (including keepdim and
-    dim=None). Meta returns a Meta tensor of `input_shape` with no allocation;
-    cpu allocates through accounting and copies each grad value along the
-    reduced axis (or all axes when has_dim is false). Grad shape must equal
-    `_sum_out_shape` or a ShapeError is raised before any allocation.
-    """
-    var g = grad_obj.downcast_value_ptr[Tensor]()
-    var device_code = g[].device_code
-    var has_dim = Int(py=has_dim_obj) != 0
-    var dim = Int(py=dim_obj)
-    var keepdim = Int(py=keepdim_obj) != 0
-
-    var out_shape = _parse_shape(input_shape_obj)
-    # Re-validate dim against the input rank so Meta and cpu agree on errors.
-    var expected = _sum_out_shape(out_shape, has_dim, dim, keepdim)
-    if not _shapes_equal(g[].shape, expected):
-        _raise_shape_error(g[].shape, expected)
-
-    var out_strides = _row_major_strides(out_shape)
-    var nbytes = _nbytes_for_shape(out_shape)
-
-    if device_code == 1:  # meta
-        return _make_meta_result(out_shape^, out_strides^)
-
-    var data = _alloc_fp32_out(nbytes)
-    if nbytes >= 1:
-        var o_f = data.value().unsafe_bitcast[Float32]()
-        var n_out = nbytes // 4
-        if g[].nbytes < 1:
-            for i in range(n_out):
-                o_f[unsafe_offset=i] = Float32(0.0)
-        else:
-            var g_f = g[].data.value().unsafe_bitcast[Float32]()
-            var rank = len(out_shape)
-            # Whole-tensor or 0-d: broadcast the single grad value everywhere.
-            if (not has_dim) or rank == 0:
-                var g_val = g_f[unsafe_offset=0]
-                for i in range(n_out):
-                    o_f[unsafe_offset=i] = g_val
-            else:
-                # Contiguous row-major: keepdim and non-keepdim grads share
-                # layout, so grad index = o * inner + i (mirrors sum_dim).
-                var d = _normalize_dim(dim, rank)
-                var outer = _product_range(out_shape, 0, d)
-                var reduced = out_shape[d]
-                var inner = _product_range(out_shape, d + 1, rank)
-                for o in range(outer):
-                    for i in range(inner):
-                        var g_val = g_f[unsafe_offset=o * inner + i]
-                        for r in range(reduced):
-                            var out_idx = (o * reduced + r) * inner + i
-                            o_f[unsafe_offset=out_idx] = g_val
-
-    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
-
-
-def mean_dim(
-    a_obj: PythonObject,
-    dim_obj: PythonObject,
-    has_dim_obj: PythonObject,
-    keepdim_obj: PythonObject,
-) raises -> PythonObject:
-    """Mean over all elements or one axis: Reference kernel or Meta version.
-
-    Same dim / keepdim / AxisError rules as `sum_dim` (`_sum_out_shape`). Cpu
-    accumulates in Float64, divides by the reduced count in Float64, stores
-    fp32; a zero count writes NaN. Meta returns a Meta tensor of the output
-    shape with no allocation.
-    """
-    var a = a_obj.downcast_value_ptr[Tensor]()
-    var a_dev = a[].device_code
-    var has_dim = Int(py=has_dim_obj) != 0
-    var dim = Int(py=dim_obj)
-    var keepdim = Int(py=keepdim_obj) != 0
-
-    var out_shape = _sum_out_shape(a[].shape, has_dim, dim, keepdim)
-    var out_strides = _row_major_strides(out_shape)
-    var nbytes = _nbytes_for_shape(out_shape)
-    var count = _reduced_count(a[].shape, has_dim, dim)
-
-    if a_dev == 1:  # meta
-        return _make_meta_result(out_shape^, out_strides^)
-
-    var data = _alloc_fp32_out(nbytes)
-    if nbytes >= 1:
-        var o_f = data.value().unsafe_bitcast[Float32]()
-        # Zero count (empty reduction): NaN per PyTorch, including empty input.
-        if count == 0:
+        var count = 0
+        if as_mean:
+            count = _reduced_count(a[].shape, has_dim, dim)
+        if as_mean and count == 0:
+            # Zero count (empty reduction): NaN per PyTorch, including empty input.
             var n_out = nbytes // 4
             var nan_f = Float32(Float64(0.0) / Float64(0.0))
             for i in range(n_out):
                 o_f[unsafe_offset=i] = nan_f
+        elif (not as_mean) and a[].nbytes < 1:
+            # Empty input / empty reduction axis: every output element is 0.0.
+            var n_out_z = nbytes // 4
+            for i in range(n_out_z):
+                o_f[unsafe_offset=i] = Float32(0.0)
         else:
             var a_f = a[].data.value().unsafe_bitcast[Float32]()
             var rank = len(a[].shape)
-            var inv = Float64(1.0) / Float64(count)
+            var inv: Float64 = 1.0
+            if as_mean:
+                inv = Float64(1.0) / Float64(count)
             # Whole-tensor or 0-d (single element): one Float64 accumulator.
             if (not has_dim) or rank == 0:
                 var acc: Float64 = 0.0
@@ -294,18 +179,20 @@ def mean_dim(
     return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
 
 
-def mean_backward(
+def _reduce_backward(
     grad_obj: PythonObject,
     input_shape_obj: PythonObject,
     dim_obj: PythonObject,
     has_dim_obj: PythonObject,
     keepdim_obj: PythonObject,
+    as_mean: Bool,
 ) raises -> PythonObject:
-    """Broadcast mean's upstream gradient times 1/count to the input shape.
+    """Shared sum/mean backward: one broadcast-back loop.
 
-    One kernel: allocates only the input-shaped result (no intermediate). Meta
-    returns a Meta tensor of `input_shape` with no allocation. Grad shape must
-    equal `_sum_out_shape` or a ShapeError is raised before any allocation.
+    When `as_mean`, each upstream grad value is scaled by 1/count before being
+    written along the reduced axes. Grad shape must equal `_sum_out_shape` or a
+    ShapeError is raised before any allocation. Meta returns a Meta tensor of
+    `input_shape` with no allocation.
     """
     var g = grad_obj.downcast_value_ptr[Tensor]()
     var device_code = g[].device_code
@@ -314,14 +201,18 @@ def mean_backward(
     var keepdim = Int(py=keepdim_obj) != 0
 
     var out_shape = _parse_shape(input_shape_obj)
+    # Re-validate dim against the input rank so Meta and cpu agree on errors.
     var expected = _sum_out_shape(out_shape, has_dim, dim, keepdim)
     if not _shapes_equal(g[].shape, expected):
         _raise_shape_error(g[].shape, expected)
 
     var out_strides = _row_major_strides(out_shape)
     var nbytes = _nbytes_for_shape(out_shape)
-    var count = _reduced_count(out_shape, has_dim, dim)
-    var scale = Float32(Float64(1.0) / Float64(count))
+
+    var scale = Float32(1.0)
+    if as_mean:
+        var count = _reduced_count(out_shape, has_dim, dim)
+        scale = Float32(Float64(1.0) / Float64(count))
 
     if device_code == 1:  # meta
         return _make_meta_result(out_shape^, out_strides^)
@@ -336,12 +227,14 @@ def mean_backward(
         else:
             var g_f = g[].data.value().unsafe_bitcast[Float32]()
             var rank = len(out_shape)
-            # Whole-tensor or 0-d: broadcast scaled grad everywhere.
+            # Whole-tensor or 0-d: broadcast the (possibly scaled) grad everywhere.
             if (not has_dim) or rank == 0:
                 var g_val = g_f[unsafe_offset=0] * scale
                 for i in range(n_out):
                     o_f[unsafe_offset=i] = g_val
             else:
+                # Contiguous row-major: keepdim and non-keepdim grads share
+                # layout, so grad index = o * inner + i (mirrors _reduce_dim).
                 var d = _normalize_dim(dim, rank)
                 var outer = _product_range(out_shape, 0, d)
                 var reduced = out_shape[d]
@@ -354,3 +247,73 @@ def mean_backward(
                             o_f[unsafe_offset=out_idx] = g_val
 
     return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def sum_dim(
+    a_obj: PythonObject,
+    dim_obj: PythonObject,
+    has_dim_obj: PythonObject,
+    keepdim_obj: PythonObject,
+) raises -> PythonObject:
+    """Sum over all elements or one axis: Reference kernel or Meta version.
+
+    `has_dim_obj` is 0 for dim=None, else 1 with `dim_obj` the axis (may be
+    negative). Output shape comes from `_sum_out_shape`. Cpu accumulates in
+    Float64 per output element; empty reductions write 0.0. Meta returns a
+    Meta tensor of the output shape with no allocation.
+    """
+    return _reduce_dim(a_obj, dim_obj, has_dim_obj, keepdim_obj, False)
+
+
+def sum_backward(
+    grad_obj: PythonObject,
+    input_shape_obj: PythonObject,
+    dim_obj: PythonObject,
+    has_dim_obj: PythonObject,
+    keepdim_obj: PythonObject,
+) raises -> PythonObject:
+    """Broadcast sum's upstream gradient back to the input shape.
+
+    Shared by whole-tensor and one-axis sum backward (including keepdim and
+    dim=None). Meta returns a Meta tensor of `input_shape` with no allocation;
+    cpu allocates through accounting and copies each grad value along the
+    reduced axis (or all axes when has_dim is false). Grad shape must equal
+    `_sum_out_shape` or a ShapeError is raised before any allocation.
+    """
+    return _reduce_backward(
+        grad_obj, input_shape_obj, dim_obj, has_dim_obj, keepdim_obj, False
+    )
+
+
+def mean_dim(
+    a_obj: PythonObject,
+    dim_obj: PythonObject,
+    has_dim_obj: PythonObject,
+    keepdim_obj: PythonObject,
+) raises -> PythonObject:
+    """Mean over all elements or one axis: Reference kernel or Meta version.
+
+    Same dim / keepdim / AxisError rules as `sum_dim` (`_sum_out_shape`). Cpu
+    accumulates in Float64, divides by the reduced count in Float64, stores
+    fp32; a zero count writes NaN. Meta returns a Meta tensor of the output
+    shape with no allocation.
+    """
+    return _reduce_dim(a_obj, dim_obj, has_dim_obj, keepdim_obj, True)
+
+
+def mean_backward(
+    grad_obj: PythonObject,
+    input_shape_obj: PythonObject,
+    dim_obj: PythonObject,
+    has_dim_obj: PythonObject,
+    keepdim_obj: PythonObject,
+) raises -> PythonObject:
+    """Broadcast mean's upstream gradient times 1/count to the input shape.
+
+    One kernel: allocates only the input-shaped result (no intermediate). Meta
+    returns a Meta tensor of `input_shape` with no allocation. Grad shape must
+    equal `_sum_out_shape` or a ShapeError is raised before any allocation.
+    """
+    return _reduce_backward(
+        grad_obj, input_shape_obj, dim_obj, has_dim_obj, keepdim_obj, True
+    )

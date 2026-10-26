@@ -143,12 +143,21 @@ class AccumulateGrad(Node):
 
 
 class SumBackward(Node):
-    """Sum over all axes or one axis: broadcast upstream grad to the input shape.
+    """Sum or mean over axes: broadcast upstream grad (mean scales by 1/count).
 
-    Saves no tensors — only the input shape, dim, keepdim, and device.
+    Saves no tensors — only the input shape, dim, keepdim, device, and which
+    engine backward to call. `MeanBackward` is a thin subclass that selects
+    `mean_backward`.
     """
 
-    __slots__ = ("next_functions", "input_shape", "input_device", "dim", "keepdim")
+    __slots__ = (
+        "next_functions",
+        "input_shape",
+        "input_device",
+        "dim",
+        "keepdim",
+        "_backward_fn",
+    )
 
     def __init__(
         self,
@@ -157,22 +166,27 @@ class SumBackward(Node):
         input_device: str,
         dim=None,
         keepdim: bool = False,
+        *,
+        _backward_fn=None,
     ):
+        from . import _engine
+
         self.next_functions = (input_node,)
         self.input_shape = input_shape
         self.input_device = input_device
         self.dim = dim
         self.keepdim = keepdim
+        self._backward_fn = (
+            _engine.sum_backward if _backward_fn is None else _backward_fn
+        )
 
     def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
-        from . import _engine
-
         has_dim = 0 if self.dim is None else 1
         dim_arg = 0 if self.dim is None else self.dim
         keepdim_arg = 1 if self.keepdim else 0
         expanded = _wrap(
             _call_engine(
-                _engine.sum_backward,
+                self._backward_fn,
                 grad_output._core,
                 self.input_shape,
                 dim_arg,
@@ -183,13 +197,10 @@ class SumBackward(Node):
         return [(self.next_functions[0], expanded)]
 
 
-class MeanBackward(Node):
-    """Mean over all axes or one axis: broadcast upstream grad * 1/count.
+class MeanBackward(SumBackward):
+    """Mean over axes: same as SumBackward with the mean_backward engine."""
 
-    Saves no tensors — only the input shape, dim, keepdim, and device.
-    """
-
-    __slots__ = ("next_functions", "input_shape", "input_device", "dim", "keepdim")
+    __slots__ = ()
 
     def __init__(
         self,
@@ -199,29 +210,16 @@ class MeanBackward(Node):
         dim=None,
         keepdim: bool = False,
     ):
-        self.next_functions = (input_node,)
-        self.input_shape = input_shape
-        self.input_device = input_device
-        self.dim = dim
-        self.keepdim = keepdim
-
-    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
         from . import _engine
 
-        has_dim = 0 if self.dim is None else 1
-        dim_arg = 0 if self.dim is None else self.dim
-        keepdim_arg = 1 if self.keepdim else 0
-        expanded = _wrap(
-            _call_engine(
-                _engine.mean_backward,
-                grad_output._core,
-                self.input_shape,
-                dim_arg,
-                has_dim,
-                keepdim_arg,
-            )
+        super().__init__(
+            input_node,
+            input_shape,
+            input_device,
+            dim=dim,
+            keepdim=keepdim,
+            _backward_fn=_engine.mean_backward,
         )
-        return [(self.next_functions[0], expanded)]
 
 
 class AddBackward(Node):
