@@ -663,9 +663,12 @@ def cross_entropy(logits: Tensor, labels: Tensor) -> Tensor:
         ``(1/N) * Σ_i (logsumexp(logits[i]) - logits[i, labels[i]])``.
         Empty batch (``N == 0``) yields NaN.
     """
-    return Tensor._from_core(
+    from . import autograd
+
+    result = Tensor._from_core(
         _call_engine(_engine.cross_entropy, logits._core, labels._core)
     )
+    return autograd.record_cross_entropy(result, logits, labels)
 
 
 __all__ += ["cross_entropy"]

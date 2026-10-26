@@ -45,6 +45,42 @@ def _cross_entropy_check(
         )
 
 
+def _validate_cross_entropy_labels(
+    labels_obj: PythonObject, n: Int, c: Int
+) raises:
+    """Reject non-integral or out-of-range class indices before any indexing.
+
+    Shared by forward and backward cpu paths so neither can out-of-bounds-read
+    labels. Empty batch (n < 1) is a no-op.
+    """
+    if n < 1:
+        return
+    var labels = labels_obj.downcast_value_ptr[Tensor]()
+    var labels_f = labels[].data.value().unsafe_bitcast[Float32]()
+    var c_f = Float32(c)
+    for i in range(n):
+        var v = labels_f[unsafe_offset=i]
+        # NaN is not equal to itself; also reject non-integral / out of range.
+        var bad = v != v
+        if not bad:
+            if v < Float32(0.0) or v >= c_f:
+                bad = True
+            else:
+                var yi_check = Int(v)
+                if Float32(yi_check) != v:
+                    bad = True
+        if bad:
+            raise Error(
+                "cross_entropy: label "
+                + String(v)
+                + " at index "
+                + String(i)
+                + " is not an integral class index in [0, "
+                + String(c)
+                + ")"
+            )
+
+
 def cross_entropy(
     logits_obj: PythonObject, labels_obj: PythonObject
 ) raises -> PythonObject:
@@ -76,30 +112,7 @@ def cross_entropy(
         return _make_meta_result(out_shape^, out_strides^)
 
     # Validate every label before allocation / indexing (memory safety).
-    if n >= 1:
-        var labels_f = labels[].data.value().unsafe_bitcast[Float32]()
-        var c_f = Float32(c)
-        for i in range(n):
-            var v = labels_f[unsafe_offset=i]
-            # NaN is not equal to itself; also reject non-integral / out of range.
-            var bad = v != v
-            if not bad:
-                if v < Float32(0.0) or v >= c_f:
-                    bad = True
-                else:
-                    var yi_check = Int(v)
-                    if Float32(yi_check) != v:
-                        bad = True
-            if bad:
-                raise Error(
-                    "cross_entropy: label "
-                    + String(v)
-                    + " at index "
-                    + String(i)
-                    + " is not an integral class index in [0, "
-                    + String(c)
-                    + ")"
-                )
+    _validate_cross_entropy_labels(labels_obj, n, c)
 
     var data = _alloc_fp32_out(nbytes)
     var o_f = data.value().unsafe_bitcast[Float32]()
@@ -128,5 +141,80 @@ def cross_entropy(
         var loss_i = lse - Float64(x_f[unsafe_offset=row + yi])
         total = total + loss_i
     o_f[unsafe_offset=0] = Float32(total / Float64(n))
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def cross_entropy_backward(
+    grad_obj: PythonObject, logits_obj: PythonObject, labels_obj: PythonObject
+) raises -> PythonObject:
+    """Logits gradient for mean cross-entropy: fused Reference kernel / Meta.
+
+    For loss = mean_i(lse(x_i) - x[i, y_i]) and upstream scalar g,
+    grad_x[i, j] = g / N * (softmax(x_i)_j - [j == y_i]). Softmax is
+    max-subtracted in Float64. Output shape matches logits (N, C). Shared
+    checks and (on cpu) label re-validation run before any allocation. Meta
+    returns a Meta (N, C) tensor with no allocation.
+    """
+    var grad = grad_obj.downcast_value_ptr[Tensor]()
+    var logits = logits_obj.downcast_value_ptr[Tensor]()
+    var labels = labels_obj.downcast_value_ptr[Tensor]()
+
+    var logits_dev = logits[].device_code
+    _cross_entropy_check(
+        logits[].shape, labels[].shape, logits_dev, labels[].device_code
+    )
+    _ensure_same_device(grad[].device_code, logits_dev, "cross_entropy")
+    if len(grad[].shape) != 0:
+        raise Error(
+            "mojodl.ShapeError: cross_entropy expects a scalar gradient (shape ()), got "
+            + _format_shape(grad[].shape)
+        )
+
+    var n = logits[].shape[0]
+    var c = logits[].shape[1]
+
+    var out_shape = List[Int](capacity=2)
+    out_shape.append(n)
+    out_shape.append(c)
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if logits_dev == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    _validate_cross_entropy_labels(labels_obj, n, c)
+
+    var data = _alloc_fp32_out(nbytes)
+    if n == 0:
+        return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+    var g_f = grad[].data.value().unsafe_bitcast[Float32]()
+    var x_f = logits[].data.value().unsafe_bitcast[Float32]()
+    var y_f = labels[].data.value().unsafe_bitcast[Float32]()
+    var o_f = data.value().unsafe_bitcast[Float32]()
+    var scale = Float64(g_f[unsafe_offset=0]) / Float64(n)
+
+    for i in range(n):
+        var row = i * c
+        var lane_max = Float64(x_f[unsafe_offset=row])
+        for j in range(1, c):
+            var v = Float64(x_f[unsafe_offset=row + j])
+            if v > lane_max:
+                lane_max = v
+        var lane_sum: Float64 = 0.0
+        for j in range(c):
+            lane_sum = lane_sum + math_exp(
+                Float64(x_f[unsafe_offset=row + j]) - lane_max
+            )
+        var yi = Int(y_f[unsafe_offset=i])
+        for j in range(c):
+            var soft_j = math_exp(
+                Float64(x_f[unsafe_offset=row + j]) - lane_max
+            ) / lane_sum
+            var delta = Float64(0.0)
+            if j == yi:
+                delta = 1.0
+            o_f[unsafe_offset=row + j] = Float32(scale * (soft_j - delta))
 
     return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)

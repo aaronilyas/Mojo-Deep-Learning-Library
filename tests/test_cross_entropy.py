@@ -138,3 +138,178 @@ def test_cross_entropy_meta_returns_meta_without_allocating():
     after = mojodl.memory_stats()
     assert after["current_bytes"] == before["current_bytes"]
     assert after["peak_bytes"] == before["peak_bytes"]
+
+
+# ---------------------------------------------------------------------------
+# backward
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape", _ORACLE_SHAPES, ids=_ORACLE_IDS)
+def test_cross_entropy_backward_matches_torch(shape):
+    n, c = shape
+    logits_np, labels_np = _seeded_logits_and_labels(n, c)
+
+    logits = mojodl.Tensor(logits_np, requires_grad=True)
+    labels = mojodl.Tensor(labels_np)
+    loss = mojodl.cross_entropy(logits, labels)
+
+    torch_logits = torch.tensor(logits_np, requires_grad=True)
+    torch_loss = F.cross_entropy(torch_logits, torch.from_numpy(labels_np))
+
+    np.testing.assert_allclose(
+        loss.numpy(), torch_loss.detach().numpy(), rtol=CE_RTOL, atol=CE_ATOL
+    )
+
+    loss.backward()
+    torch_loss.backward()
+
+    assert isinstance(logits.grad, mojodl.Tensor)
+    np.testing.assert_allclose(
+        logits.grad.numpy(),
+        torch_logits.grad.numpy(),
+        rtol=CE_RTOL,
+        atol=CE_ATOL,
+    )
+
+
+def test_cross_entropy_worked_gradient_uniform_two_class():
+    logits = mojodl.Tensor(
+        np.array([[0.0, 0.0]], dtype=np.float32), requires_grad=True
+    )
+    labels = mojodl.Tensor(np.array([1], dtype=np.int64))
+
+    mojodl.cross_entropy(logits, labels).backward()
+
+    assert isinstance(logits.grad, mojodl.Tensor)
+    np.testing.assert_allclose(
+        logits.grad.numpy(),
+        np.array([[0.5, -0.5]], dtype=np.float32),
+        atol=1e-7,
+    )
+
+
+def test_cross_entropy_upstream_grad_scales_by_three():
+    logits_np, labels_np = _seeded_logits_and_labels(4, 3)
+
+    logits = mojodl.Tensor(logits_np, requires_grad=True)
+    labels = mojodl.Tensor(labels_np)
+    scale = mojodl.Tensor(np.float32(3.0))
+    (mojodl.cross_entropy(logits, labels) * scale).backward()
+
+    torch_logits = torch.tensor(logits_np, requires_grad=True)
+    F.cross_entropy(torch_logits, torch.from_numpy(labels_np)).backward()
+
+    assert isinstance(logits.grad, mojodl.Tensor)
+    np.testing.assert_allclose(
+        logits.grad.numpy(),
+        3.0 * torch_logits.grad.numpy(),
+        rtol=CE_RTOL,
+        atol=CE_ATOL,
+    )
+
+
+def test_cross_entropy_recording_requires_grad_and_no_grad():
+    logits_np, labels_np = _seeded_logits_and_labels(4, 3)
+    labels = mojodl.Tensor(labels_np)
+
+    logits_rg = mojodl.Tensor(logits_np, requires_grad=True)
+    loss_rg = mojodl.cross_entropy(logits_rg, labels)
+    assert loss_rg.requires_grad is True
+    assert loss_rg.grad_fn is not None
+
+    with mojodl.no_grad():
+        loss_ng = mojodl.cross_entropy(logits_rg, labels)
+    assert loss_ng.requires_grad is False
+    assert loss_ng.grad_fn is None
+
+    logits_plain = mojodl.Tensor(logits_np)
+    loss_plain = mojodl.cross_entropy(logits_plain, labels)
+    assert loss_plain.requires_grad is False
+    assert loss_plain.grad_fn is None
+
+
+def test_cross_entropy_labels_are_constants_no_grad():
+    logits_np, labels_np = _seeded_logits_and_labels(4, 3)
+    logits = mojodl.Tensor(logits_np, requires_grad=True)
+    labels = mojodl.Tensor(labels_np, requires_grad=False)
+
+    mojodl.cross_entropy(logits, labels).backward()
+
+    assert labels.grad is None
+
+
+def test_cross_entropy_large_magnitudes_finite_and_matches_torch():
+    logits_np, labels_np = _seeded_logits_and_labels(8, 5)
+    logits_np = (logits_np * 1e4).astype(np.float32)
+
+    logits = mojodl.Tensor(logits_np, requires_grad=True)
+    labels = mojodl.Tensor(labels_np)
+    loss = mojodl.cross_entropy(logits, labels)
+
+    torch_logits = torch.tensor(logits_np, requires_grad=True)
+    torch_loss = F.cross_entropy(torch_logits, torch.from_numpy(labels_np))
+
+    assert np.isfinite(loss.numpy())
+    np.testing.assert_allclose(
+        loss.numpy(), torch_loss.detach().numpy(), rtol=CE_RTOL, atol=CE_ATOL
+    )
+
+    loss.backward()
+    torch_loss.backward()
+
+    assert np.all(np.isfinite(logits.grad.numpy()))
+    np.testing.assert_allclose(
+        logits.grad.numpy(),
+        torch_logits.grad.numpy(),
+        atol=CE_ATOL,
+    )
+
+    lit_np = np.array(
+        [[1e4, -1e4, 0.0], [-1e4, 1e4, 1e4]], dtype=np.float32
+    )
+    lit_labels_np = np.array([1, 0], dtype=np.int64)
+
+    lit_logits = mojodl.Tensor(lit_np, requires_grad=True)
+    lit_labels = mojodl.Tensor(lit_labels_np)
+    lit_loss = mojodl.cross_entropy(lit_logits, lit_labels)
+
+    torch_lit = torch.tensor(lit_np, requires_grad=True)
+    torch_lit_loss = F.cross_entropy(
+        torch_lit, torch.from_numpy(lit_labels_np)
+    )
+
+    assert np.isfinite(lit_loss.numpy())
+    np.testing.assert_allclose(
+        lit_loss.numpy(),
+        torch_lit_loss.detach().numpy(),
+        rtol=CE_RTOL,
+        atol=CE_ATOL,
+    )
+
+    lit_loss.backward()
+    torch_lit_loss.backward()
+
+    assert np.all(np.isfinite(lit_logits.grad.numpy()))
+    np.testing.assert_allclose(
+        lit_logits.grad.numpy(),
+        torch_lit.grad.numpy(),
+        atol=CE_ATOL,
+    )
+
+
+def test_cross_entropy_meta_backward_fills_meta_grad_without_allocating():
+    mojodl.reset_peak_memory_stats()
+    before = mojodl.memory_stats()
+
+    logits = mojodl.empty((4, 3), device="meta", requires_grad=True)
+    labels = mojodl.empty((4,), device="meta")
+    mojodl.cross_entropy(logits, labels).backward()
+
+    assert isinstance(logits.grad, mojodl.Tensor)
+    assert logits.grad.device == "meta"
+    assert logits.grad.shape == (4, 3)
+
+    after = mojodl.memory_stats()
+    assert after["current_bytes"] == before["current_bytes"]
+    assert after["peak_bytes"] == before["peak_bytes"]

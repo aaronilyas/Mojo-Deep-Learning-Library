@@ -866,6 +866,58 @@ def record_log_softmax(result: Tensor, inp: Tensor, dim: int) -> Tensor:
     return attach(result, LogSoftmaxBackward(nxt, saved_out, dim))
 
 
+class CrossEntropyBackward(Node):
+    """Mean cross-entropy: grad_logits from upstream scalar and saved inputs.
+
+    Saves non-grad aliases of logits and labels (constants; no node for
+    labels). Backward calls the fused engine kernel
+    ``cross_entropy_backward(grad, logits, labels)``.
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
+
+    def __init__(
+        self, next_logits: Node, saved_logits: Tensor, saved_labels: Tensor
+    ):
+        self.next_functions = (next_logits,)
+        self.save_for_backward(saved_logits, saved_labels)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        saved_logits, saved_labels = self.saved_tensors()
+        grad_x = _wrap(
+            _call_engine(
+                _engine.cross_entropy_backward,
+                grad_output._core,
+                saved_logits._core,
+                saved_labels._core,
+            )
+        )
+        return [(self.next_functions[0], grad_x)]
+
+
+def record_cross_entropy(
+    result: Tensor, logits: Tensor, labels: Tensor
+) -> Tensor:
+    """Attach a CrossEntropyBackward node when `logits` requires grad.
+
+    Labels are constants: never get a node. Saves
+    ``Tensor._from_core`` aliases of logits and labels so the result does not
+    hold the caller's Tensor objects.
+    """
+    from . import Tensor
+
+    nxt = input_node(logits)
+    if nxt is None:
+        return result
+    saved_logits = Tensor._from_core(logits._core)
+    saved_labels = Tensor._from_core(labels._core)
+    return attach(
+        result, CrossEntropyBackward(nxt, saved_logits, saved_labels)
+    )
+
+
 def _ones_like_seed(tensor: Tensor) -> Tensor:
     """Engine-created ones tensor with the output's shape and device (seed grad)."""
     from . import _engine
