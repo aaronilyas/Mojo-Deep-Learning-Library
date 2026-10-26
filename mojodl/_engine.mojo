@@ -39,7 +39,7 @@ from ops_elementwise import (
 )
 from ops_constructors import zeros, rand, randn
 from ops_cross_entropy import cross_entropy, cross_entropy_backward
-from ops_optim import sgd_step
+from ops_optim import sgd_step, sgd_momentum_step
 
 
 @export
@@ -213,6 +213,13 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[sgd_step](
             "sgd_step",
             docstring="In-place SGD update param -= lr * grad; Reference / Meta.",
+        )
+        m.def_function[sgd_momentum_step](
+            "sgd_momentum_step",
+            docstring=(
+                "In-place SGD with momentum: buf = m*buf + grad; "
+                "param -= lr*buf; Reference / Meta."
+            ),
         )
 
         var mod = m.finalize()
