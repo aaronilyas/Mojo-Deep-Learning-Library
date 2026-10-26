@@ -281,3 +281,24 @@ def test_sum_dim_non_int_raises_type_error(dim):
 
     with pytest.raises(TypeError):
         a.sum(dim=dim)
+
+
+def test_sum_dim_numpy_int_matches_torch():
+    rng = np.random.default_rng(0)
+    a_np = rng.standard_normal((2, 3, 4)).astype(np.float32)
+    t = mojodl.Tensor(a_np)
+    torch_t = torch.from_numpy(a_np)
+
+    result = t.sum(dim=np.int64(1))
+    expected = torch_t.sum(dim=1)
+    assert result.shape == tuple(expected.shape)
+    np.testing.assert_allclose(
+        result.numpy(), expected.numpy(), rtol=1e-5, atol=1e-5
+    )
+
+    result = t.sum(dim=np.int32(-1), keepdim=True)
+    expected = torch_t.sum(dim=-1, keepdim=True)
+    assert result.shape == tuple(expected.shape)
+    np.testing.assert_allclose(
+        result.numpy(), expected.numpy(), rtol=1e-5, atol=1e-5
+    )

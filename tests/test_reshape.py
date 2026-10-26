@@ -312,3 +312,22 @@ def test_reshape_non_int_dim_raises_type_error(args):
 
     with pytest.raises(TypeError):
         a.reshape(*args)
+
+
+def test_reshape_numpy_int_matches_torch():
+    rng = np.random.default_rng(0)
+    a_np = rng.standard_normal((2, 3, 4)).astype(np.float32)
+    t = mojodl.Tensor(a_np)
+    torch_t = torch.from_numpy(a_np)
+
+    result = t.reshape(np.int64(4), np.int64(-1))
+    expected = torch_t.reshape(4, -1)
+    assert result.shape == (4, 6)
+    assert result.shape == tuple(expected.shape)
+    np.testing.assert_array_equal(result.numpy(), expected.numpy())
+
+    result = t.reshape((np.int32(6), 4))
+    expected = torch_t.reshape((6, 4))
+    assert result.shape == (6, 4)
+    assert result.shape == tuple(expected.shape)
+    np.testing.assert_array_equal(result.numpy(), expected.numpy())

@@ -83,14 +83,12 @@ def _call_engine(fn, *args):
 def _encode_reduce_args(dim, keepdim, method: str) -> tuple[int, int, int]:
     """Validate/encode dim and keepdim for Tensor.sum / Tensor.mean.
 
-    Raises TypeError naming ``method`` when ``dim`` is bool or a non-int.
-    Returns ``(has_dim, dim_arg, keepdim_arg)`` for the engine call.
+    Raises TypeError naming ``method`` when ``dim`` is bool or not
+    ``__index__``-able. Returns ``(has_dim, dim_arg, keepdim_arg)`` with
+    ``dim_arg`` a plain ``int`` for the engine call.
     """
     if dim is not None:
-        if isinstance(dim, bool) or not isinstance(dim, int):
-            raise TypeError(
-                f"{method}(): dim must be an int or None, got {type(dim).__name__}"
-            )
+        dim = _require_int_dim(dim, method)
     has_dim = 0 if dim is None else 1
     dim_arg = 0 if dim is None else dim
     keepdim_arg = 1 if keepdim else 0
@@ -463,7 +461,12 @@ class Tensor:
                 _engine.sum_dim, self._core, dim_arg, has_dim, keepdim_arg
             )
         )
-        return autograd.record_sum(result, self, dim=dim, keepdim=bool(keepdim))
+        return autograd.record_sum(
+            result,
+            self,
+            dim=(dim_arg if has_dim else None),
+            keepdim=bool(keepdim),
+        )
 
     def mean(self, dim=None, keepdim=False):
         """Reduce all elements, or along one axis, to their mean.
@@ -481,7 +484,12 @@ class Tensor:
                 _engine.mean_dim, self._core, dim_arg, has_dim, keepdim_arg
             )
         )
-        return autograd.record_mean(result, self, dim=dim, keepdim=bool(keepdim))
+        return autograd.record_mean(
+            result,
+            self,
+            dim=(dim_arg if has_dim else None),
+            keepdim=bool(keepdim),
+        )
 
     def reshape(self, *shape):
         """Return a zero-copy view with a new shape (one ``-1`` may be inferred).
@@ -497,13 +505,7 @@ class Tensor:
             dims = shape[0]
         else:
             dims = shape
-        parsed = []
-        for i, d in enumerate(dims):
-            if isinstance(d, bool) or not isinstance(d, int):
-                raise TypeError(
-                    f"reshape(): shape[{i}] must be an int, got {type(d).__name__}"
-                )
-            parsed.append(d)
+        parsed = [_require_int_dim(d, "reshape") for d in dims]
         result = Tensor._from_core(
             _call_engine(_engine.reshape, self._core, tuple(parsed))
         )

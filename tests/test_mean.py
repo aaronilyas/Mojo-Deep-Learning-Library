@@ -360,3 +360,24 @@ def test_mean_dim_non_int_raises_type_error(dim):
 
     with pytest.raises(TypeError):
         a.mean(dim=dim)
+
+
+def test_mean_dim_numpy_int_matches_torch():
+    rng = np.random.default_rng(0)
+    a_np = rng.standard_normal((2, 3, 4)).astype(np.float32)
+    t = mojodl.Tensor(a_np)
+    torch_t = torch.from_numpy(a_np)
+
+    result = t.mean(dim=np.int64(1))
+    expected = torch_t.mean(dim=1)
+    assert result.shape == tuple(expected.shape)
+    np.testing.assert_allclose(
+        result.numpy(), expected.numpy(), rtol=1e-5, atol=1e-5
+    )
+
+    result = t.mean(dim=np.int32(-1), keepdim=True)
+    expected = torch_t.mean(dim=-1, keepdim=True)
+    assert result.shape == tuple(expected.shape)
+    np.testing.assert_allclose(
+        result.numpy(), expected.numpy(), rtol=1e-5, atol=1e-5
+    )
