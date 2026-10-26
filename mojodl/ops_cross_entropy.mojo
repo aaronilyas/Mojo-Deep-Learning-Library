@@ -45,6 +45,18 @@ def _cross_entropy_check(
         )
 
 
+def _cross_entropy_row_is_poisoned(saw_nan: Bool, lane_max: Float64) -> Bool:
+    """True when a CE row must yield NaN loss and an all-NaN grad row.
+
+    Matches PyTorch: any NaN logit, or row max equal to +inf. Callers must
+    not run the max-subtracted exp path on a poisoned row (Mojo exp(NaN)
+    is +inf, which would diverge from PyTorch).
+    """
+    if saw_nan:
+        return True
+    return lane_max == (Float64(1.0) / Float64(0.0))
+
+
 def _validate_cross_entropy_labels(
     labels_obj: PythonObject, n: Int, c: Int
 ) raises:
@@ -143,13 +155,20 @@ def cross_entropy(
     var x_f = logits[].data.value().unsafe_bitcast[Float32]()
     var y_f = labels[].data.value().unsafe_bitcast[Float32]()
     var total: Float64 = 0.0
+    var nan64 = Float64(0.0) / Float64(0.0)
     for i in range(n):
         var row = i * c
         var lane_max = Float64(x_f[unsafe_offset=row])
+        var saw_nan = lane_max != lane_max
         for j in range(1, c):
             var v = Float64(x_f[unsafe_offset=row + j])
+            if v != v:
+                saw_nan = True
             if v > lane_max:
                 lane_max = v
+        if _cross_entropy_row_is_poisoned(saw_nan, lane_max):
+            total = total + nan64
+            continue
         var lane_sum: Float64 = 0.0
         for j in range(c):
             lane_sum = lane_sum + math_exp(
@@ -214,13 +233,21 @@ def cross_entropy_backward(
     var o_f = data.value().unsafe_bitcast[Float32]()
     var scale = Float64(g_f[unsafe_offset=0]) / Float64(n)
 
+    var nan_f = Float32(Float64(0.0) / Float64(0.0))
     for i in range(n):
         var row = i * c
         var lane_max = Float64(x_f[unsafe_offset=row])
+        var saw_nan = lane_max != lane_max
         for j in range(1, c):
             var v = Float64(x_f[unsafe_offset=row + j])
+            if v != v:
+                saw_nan = True
             if v > lane_max:
                 lane_max = v
+        if _cross_entropy_row_is_poisoned(saw_nan, lane_max):
+            for j in range(c):
+                o_f[unsafe_offset=row + j] = nan_f
+            continue
         var lane_sum: Float64 = 0.0
         for j in range(c):
             lane_sum = lane_sum + math_exp(

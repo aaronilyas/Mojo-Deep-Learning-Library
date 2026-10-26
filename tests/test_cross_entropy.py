@@ -485,3 +485,61 @@ def test_cross_entropy_logits_numpy_raises_type_error():
         mojodl.cross_entropy(logits, labels)
 
     assert "cross_entropy" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# non-finite logits: NaN / ±inf must match PyTorch loss and grad
+# ---------------------------------------------------------------------------
+
+_NONFINITE_ROW0_CASES = [
+    (np.array([1.0, np.nan, 2.0], dtype=np.float32), 0),
+    (np.array([1.0, np.inf, 2.0], dtype=np.float32), 0),
+    (np.array([1.0, 2.0, np.nan], dtype=np.float32), 2),
+    (np.array([1.0, -np.inf, 2.0], dtype=np.float32), 0),
+    (np.array([-np.inf, 1.0, 2.0], dtype=np.float32), 0),
+]
+
+_NONFINITE_ROW0_IDS = [
+    "nan_non_label",
+    "pos_inf_non_label",
+    "nan_at_label",
+    "neg_inf_non_label",
+    "neg_inf_at_label",
+]
+
+
+@pytest.mark.parametrize(
+    "row0, label0", _NONFINITE_ROW0_CASES, ids=_NONFINITE_ROW0_IDS
+)
+def test_cross_entropy_nonfinite_logits_match_torch(row0, label0):
+    """Non-finite logits propagate through loss and grad exactly as PyTorch."""
+    logits_np = np.array(
+        [row0, [0.5, 0.1, 0.2]], dtype=np.float32
+    )
+    labels_np = np.array([label0, 1], dtype=np.int64)
+
+    logits = mojodl.Tensor(logits_np, requires_grad=True)
+    labels = mojodl.Tensor(labels_np)
+    loss = mojodl.cross_entropy(logits, labels)
+
+    torch_logits = torch.tensor(logits_np, requires_grad=True)
+    torch_loss = F.cross_entropy(torch_logits, torch.from_numpy(labels_np))
+
+    np.testing.assert_allclose(
+        loss.numpy(),
+        torch_loss.detach().numpy(),
+        rtol=CE_RTOL,
+        atol=CE_ATOL,
+        equal_nan=True,
+    )
+
+    loss.backward()
+    torch_loss.backward()
+
+    np.testing.assert_allclose(
+        logits.grad.numpy(),
+        torch_logits.grad.numpy(),
+        rtol=CE_RTOL,
+        atol=CE_ATOL,
+        equal_nan=True,
+    )
