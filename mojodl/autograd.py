@@ -247,30 +247,119 @@ class ReshapeBackward(Node):
 class AddBackward(Node):
     """Elementwise add: route the incoming gradient to each requiring input.
 
-    Saves no tensors.
+    When an input was broadcast, the upstream gradient is reduced (summed
+    over broadcast dims) to that input's shape. Same-shape inputs receive
+    the upstream gradient unchanged (no extra allocation). Saves no tensors
+    — only the input shapes.
     """
 
-    __slots__ = ("next_functions",)
+    __slots__ = ("next_functions", "shape_a", "shape_b")
 
-    def __init__(self, next_a: Node | None, next_b: Node | None):
+    def __init__(
+        self,
+        next_a: Node | None,
+        next_b: Node | None,
+        shape_a: tuple,
+        shape_b: tuple,
+    ):
         self.next_functions = (next_a, next_b)
+        self.shape_a = shape_a
+        self.shape_b = shape_b
 
     def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
         out: list[tuple[Node, Tensor]] = []
-        for nxt in self.next_functions:
-            if nxt is not None:
-                out.append((nxt, grad_output))
+        next_a, next_b = self.next_functions
+        if next_a is not None:
+            if grad_output.shape == self.shape_a:
+                grad_a = grad_output
+            else:
+                grad_a = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, grad_output._core, self.shape_a
+                    )
+                )
+            out.append((next_a, grad_a))
+        if next_b is not None:
+            if grad_output.shape == self.shape_b:
+                grad_b = grad_output
+            else:
+                grad_b = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, grad_output._core, self.shape_b
+                    )
+                )
+            out.append((next_b, grad_b))
+        return out
+
+
+class SubBackward(Node):
+    """Elementwise sub: grad_a = grad reduced to a's shape;
+    grad_b = (-grad) reduced to b's shape.
+
+    Reduce is skipped when shapes already match. Saves no tensors — only
+    the input shapes. Negation uses the engine `neg` op (Meta-safe).
+    """
+
+    __slots__ = ("next_functions", "shape_a", "shape_b")
+
+    def __init__(
+        self,
+        next_a: Node | None,
+        next_b: Node | None,
+        shape_a: tuple,
+        shape_b: tuple,
+    ):
+        self.next_functions = (next_a, next_b)
+        self.shape_a = shape_a
+        self.shape_b = shape_b
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        out: list[tuple[Node, Tensor]] = []
+        next_a, next_b = self.next_functions
+        if next_a is not None:
+            if grad_output.shape == self.shape_a:
+                grad_a = grad_output
+            else:
+                grad_a = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, grad_output._core, self.shape_a
+                    )
+                )
+            out.append((next_a, grad_a))
+        if next_b is not None:
+            neg_grad = _wrap(_call_engine(_engine.neg, grad_output._core))
+            if neg_grad.shape == self.shape_b:
+                grad_b = neg_grad
+            else:
+                grad_b = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, neg_grad._core, self.shape_b
+                    )
+                )
+            out.append((next_b, grad_b))
         return out
 
 
 class MulBackward(Node):
-    """Elementwise mul: grad_a = grad * b, grad_b = grad * a.
+    """Broadcasting elementwise mul: grad_a = (grad * b) reduced to a's shape,
+    grad_b = (grad * a) reduced to b's shape.
 
     Saves each other-operand only when that gradient is needed (the input
-    tensor itself, not a copy).
+    tensor itself, not a copy). Reduce is skipped when the product already
+    has the input's shape.
     """
 
-    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
+    __slots__ = (
+        "next_functions",
+        "_saved_tensors",
+        "_saved_released",
+        "shape_a",
+        "shape_b",
+    )
 
     def __init__(
         self,
@@ -280,6 +369,8 @@ class MulBackward(Node):
         b: Tensor,
     ):
         self.next_functions = (next_a, next_b)
+        self.shape_a = a.shape
+        self.shape_b = b.shape
         # grad_b needs a; grad_a needs b — save only what apply will use.
         self.save_for_backward(
             a if next_b is not None else None,
@@ -293,14 +384,117 @@ class MulBackward(Node):
         out: list[tuple[Node, Tensor]] = []
         next_a, next_b = self.next_functions
         if next_a is not None:
-            grad_a = _wrap(
-                _call_engine(_engine.mul, grad_output._core, saved_b._core)
+            prod = _wrap(
+                _call_engine(
+                    _engine.broadcast_mul, grad_output._core, saved_b._core
+                )
             )
+            if prod.shape == self.shape_a:
+                grad_a = prod
+            else:
+                grad_a = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, prod._core, self.shape_a
+                    )
+                )
             out.append((next_a, grad_a))
         if next_b is not None:
-            grad_b = _wrap(
-                _call_engine(_engine.mul, grad_output._core, saved_a._core)
+            prod = _wrap(
+                _call_engine(
+                    _engine.broadcast_mul, grad_output._core, saved_a._core
+                )
             )
+            if prod.shape == self.shape_b:
+                grad_b = prod
+            else:
+                grad_b = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, prod._core, self.shape_b
+                    )
+                )
+            out.append((next_b, grad_b))
+        return out
+
+
+class DivBackward(Node):
+    """Broadcasting elementwise div: grad_a = (grad / b) reduced to a's shape,
+    grad_b = (-grad * a / b²) reduced to b's shape.
+
+    Built from broadcast_div, broadcast_mul, neg, and reduce_to_shape.
+    Saves b whenever any gradient is needed; a only if b requires grad
+    (the input tensors themselves). Reduce is skipped when shapes match.
+    """
+
+    __slots__ = (
+        "next_functions",
+        "_saved_tensors",
+        "_saved_released",
+        "shape_a",
+        "shape_b",
+    )
+
+    def __init__(
+        self,
+        next_a: Node | None,
+        next_b: Node | None,
+        a: Tensor,
+        b: Tensor,
+    ):
+        self.next_functions = (next_a, next_b)
+        self.shape_a = a.shape
+        self.shape_b = b.shape
+        # grad_a needs b; grad_b needs a and b — save only what apply will use.
+        self.save_for_backward(
+            a if next_b is not None else None,
+            b if next_a is not None or next_b is not None else None,
+        )
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        saved_a, saved_b = self.saved_tensors()
+        out: list[tuple[Node, Tensor]] = []
+        next_a, next_b = self.next_functions
+        if next_a is not None:
+            quot = _wrap(
+                _call_engine(
+                    _engine.broadcast_div, grad_output._core, saved_b._core
+                )
+            )
+            if quot.shape == self.shape_a:
+                grad_a = quot
+            else:
+                grad_a = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, quot._core, self.shape_a
+                    )
+                )
+            out.append((next_a, grad_a))
+        if next_b is not None:
+            neg_grad = _wrap(_call_engine(_engine.neg, grad_output._core))
+            neg_grad_a = _wrap(
+                _call_engine(
+                    _engine.broadcast_mul, neg_grad._core, saved_a._core
+                )
+            )
+            b_sq = _wrap(
+                _call_engine(
+                    _engine.broadcast_mul, saved_b._core, saved_b._core
+                )
+            )
+            quot = _wrap(
+                _call_engine(
+                    _engine.broadcast_div, neg_grad_a._core, b_sq._core
+                )
+            )
+            if quot.shape == self.shape_b:
+                grad_b = quot
+            else:
+                grad_b = _wrap(
+                    _call_engine(
+                        _engine.reduce_to_shape, quot._core, self.shape_b
+                    )
+                )
             out.append((next_b, grad_b))
         return out
 
@@ -368,7 +562,16 @@ def record_add(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
     next_b = input_node(b)
     if next_a is None and next_b is None:
         return result
-    return attach(result, AddBackward(next_a, next_b))
+    return attach(result, AddBackward(next_a, next_b, a.shape, b.shape))
+
+
+def record_sub(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
+    """Attach a SubBackward node when either input requires grad."""
+    next_a = input_node(a)
+    next_b = input_node(b)
+    if next_a is None and next_b is None:
+        return result
+    return attach(result, SubBackward(next_a, next_b, a.shape, b.shape))
 
 
 def record_mul(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
@@ -378,6 +581,254 @@ def record_mul(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
     if next_a is None and next_b is None:
         return result
     return attach(result, MulBackward(next_a, next_b, a, b))
+
+
+def record_div(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
+    """Attach a DivBackward node when either input requires grad."""
+    next_a = input_node(a)
+    next_b = input_node(b)
+    if next_a is None and next_b is None:
+        return result
+    return attach(result, DivBackward(next_a, next_b, a, b))
+
+
+class MatmulBackward(Node):
+    """Matmul: grad_a = grad @ b^T, grad_b = a^T @ grad.
+
+    Saves each other-operand only when that gradient is needed (the input
+    tensor itself, not a copy).
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
+
+    def __init__(
+        self,
+        next_a: Node | None,
+        next_b: Node | None,
+        a: Tensor,
+        b: Tensor,
+    ):
+        self.next_functions = (next_a, next_b)
+        # grad_b needs a; grad_a needs b — save only what apply will use.
+        self.save_for_backward(
+            a if next_b is not None else None,
+            b if next_a is not None else None,
+        )
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        saved_a, saved_b = self.saved_tensors()
+        out: list[tuple[Node, Tensor]] = []
+        next_a, next_b = self.next_functions
+        if next_a is not None:
+            grad_a = _wrap(
+                _call_engine(_engine.matmul_nt, grad_output._core, saved_b._core)
+            )
+            out.append((next_a, grad_a))
+        if next_b is not None:
+            grad_b = _wrap(
+                _call_engine(_engine.matmul_tn, saved_a._core, grad_output._core)
+            )
+            out.append((next_b, grad_b))
+        return out
+
+
+def record_matmul(result: Tensor, a: Tensor, b: Tensor) -> Tensor:
+    """Attach a MatmulBackward node when either input requires grad."""
+    next_a = input_node(a)
+    next_b = input_node(b)
+    if next_a is None and next_b is None:
+        return result
+    return attach(result, MatmulBackward(next_a, next_b, a, b))
+
+
+class ReluBackward(Node):
+    """ReLU: grad_in = grad where x > 0 else 0.
+
+    Saves only the input x (needed to mask the upstream gradient).
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
+
+    def __init__(self, next_x: Node, x: Tensor):
+        self.next_functions = (next_x,)
+        self.save_for_backward(x)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        (saved_x,) = self.saved_tensors()
+        grad_x = _wrap(
+            _call_engine(_engine.relu_backward, grad_output._core, saved_x._core)
+        )
+        return [(self.next_functions[0], grad_x)]
+
+
+def record_relu(result: Tensor, inp: Tensor) -> Tensor:
+    """Attach a ReluBackward node when `inp` requires grad."""
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    return attach(result, ReluBackward(nxt, inp))
+
+
+class ExpBackward(Node):
+    """Exp: grad_in = grad * exp(x), using the saved forward output.
+
+    Saves a fresh non-grad Tensor wrapping the result's engine core so the
+    result object itself is not held (avoids result → grad_fn → saved → result).
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
+
+    def __init__(self, next_x: Node, saved_out: Tensor):
+        self.next_functions = (next_x,)
+        self.save_for_backward(saved_out)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        (saved_out,) = self.saved_tensors()
+        grad_x = _wrap(
+            _call_engine(_engine.mul, grad_output._core, saved_out._core)
+        )
+        return [(self.next_functions[0], grad_x)]
+
+
+def record_exp(result: Tensor, inp: Tensor) -> Tensor:
+    """Attach an ExpBackward node when `inp` requires grad.
+
+    Saves ``Tensor._from_core(result._core)`` (same storage, no grad_fn) so
+    dropping ``result`` can free its storage by refcounting.
+    """
+    from . import Tensor
+
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    saved_out = Tensor._from_core(result._core)
+    return attach(result, ExpBackward(nxt, saved_out))
+
+
+class LogBackward(Node):
+    """Log: grad_in = grad / x.
+
+    Saves only the input x (needed to divide the upstream gradient).
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released")
+
+    def __init__(self, next_x: Node, x: Tensor):
+        self.next_functions = (next_x,)
+        self.save_for_backward(x)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        (saved_x,) = self.saved_tensors()
+        grad_x = _wrap(
+            _call_engine(_engine.log_backward, grad_output._core, saved_x._core)
+        )
+        return [(self.next_functions[0], grad_x)]
+
+
+def record_log(result: Tensor, inp: Tensor) -> Tensor:
+    """Attach a LogBackward node when `inp` requires grad."""
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    return attach(result, LogBackward(nxt, inp))
+
+
+class SoftmaxBackward(Node):
+    """Softmax: grad_in = y * (grad - sum_dim(grad * y)), using the saved output.
+
+    Saves a fresh non-grad Tensor wrapping the result's engine core so the
+    result object itself is not held (avoids result → grad_fn → saved → result),
+    plus the dim used in the forward pass.
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released", "dim")
+
+    def __init__(self, next_x: Node, saved_out: Tensor, dim: int):
+        self.next_functions = (next_x,)
+        self.dim = dim
+        self.save_for_backward(saved_out)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        (saved_out,) = self.saved_tensors()
+        grad_x = _wrap(
+            _call_engine(
+                _engine.softmax_backward,
+                grad_output._core,
+                saved_out._core,
+                self.dim,
+            )
+        )
+        return [(self.next_functions[0], grad_x)]
+
+
+def record_softmax(result: Tensor, inp: Tensor, dim: int) -> Tensor:
+    """Attach a SoftmaxBackward node when `inp` requires grad.
+
+    Saves ``Tensor._from_core(result._core)`` (same storage, no grad_fn) so
+    dropping ``result`` can free its storage by refcounting.
+    """
+    from . import Tensor
+
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    saved_out = Tensor._from_core(result._core)
+    return attach(result, SoftmaxBackward(nxt, saved_out, dim))
+
+
+class LogSoftmaxBackward(Node):
+    """Log-softmax: grad_in = grad - exp(y) * sum_dim(grad), using the saved output.
+
+    Saves a fresh non-grad Tensor wrapping the result's engine core so the
+    result object itself is not held (avoids result → grad_fn → saved → result),
+    plus the dim used in the forward pass.
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released", "dim")
+
+    def __init__(self, next_x: Node, saved_out: Tensor, dim: int):
+        self.next_functions = (next_x,)
+        self.dim = dim
+        self.save_for_backward(saved_out)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        (saved_out,) = self.saved_tensors()
+        grad_x = _wrap(
+            _call_engine(
+                _engine.log_softmax_backward,
+                grad_output._core,
+                saved_out._core,
+                self.dim,
+            )
+        )
+        return [(self.next_functions[0], grad_x)]
+
+
+def record_log_softmax(result: Tensor, inp: Tensor, dim: int) -> Tensor:
+    """Attach a LogSoftmaxBackward node when `inp` requires grad.
+
+    Saves ``Tensor._from_core(result._core)`` (same storage, no grad_fn) so
+    dropping ``result`` can free its storage by refcounting.
+    """
+    from . import Tensor
+
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    saved_out = Tensor._from_core(result._core)
+    return attach(result, LogSoftmaxBackward(nxt, saved_out, dim))
 
 
 def _ones_like_seed(tensor: Tensor) -> Tensor:

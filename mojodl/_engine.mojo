@@ -17,6 +17,27 @@ from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
 from ops_reduce import sum_dim, sum_backward, mean_dim, mean_backward
 from ops_shape import reshape
+from ops_linalg import matmul, matmul_nt, matmul_tn
+from ops_activation import (
+    relu,
+    relu_backward,
+    exp,
+    log,
+    log_backward,
+    softmax,
+    softmax_backward,
+    log_softmax,
+    log_softmax_backward,
+)
+from ops_elementwise import (
+    broadcast_add,
+    broadcast_sub,
+    broadcast_mul,
+    broadcast_div,
+    neg,
+    reduce_to_shape,
+)
+from ops_constructors import zeros, rand, randn
 
 
 @export
@@ -90,6 +111,90 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[reshape](
             "reshape",
             docstring="Zero-copy reshape view; Reference and Meta share validation.",
+        )
+        m.def_function[matmul](
+            "matmul",
+            docstring="2-D matmul Reference kernel / Meta version.",
+        )
+        m.def_function[matmul_nt](
+            "matmul_nt",
+            docstring="a @ b.T without materializing transpose (matmul backward).",
+        )
+        m.def_function[matmul_tn](
+            "matmul_tn",
+            docstring="a.T @ b without materializing transpose (matmul backward).",
+        )
+        m.def_function[relu](
+            "relu",
+            docstring="Elementwise ReLU Reference kernel / Meta version.",
+        )
+        m.def_function[relu_backward](
+            "relu_backward",
+            docstring="ReLU backward: grad where x > 0 else 0 (Reference / Meta).",
+        )
+        m.def_function[exp](
+            "exp",
+            docstring="Elementwise exp Reference kernel / Meta version.",
+        )
+        m.def_function[log](
+            "log",
+            docstring="Elementwise natural log Reference kernel / Meta version.",
+        )
+        m.def_function[log_backward](
+            "log_backward",
+            docstring="Log backward: grad / x (Reference / Meta).",
+        )
+        m.def_function[softmax](
+            "softmax",
+            docstring="Softmax along dim Reference kernel / Meta version.",
+        )
+        m.def_function[softmax_backward](
+            "softmax_backward",
+            docstring="Softmax backward: y * (grad - sum(grad*y)) (Reference / Meta).",
+        )
+        m.def_function[log_softmax](
+            "log_softmax",
+            docstring="Log-softmax along dim Reference kernel / Meta version.",
+        )
+        m.def_function[log_softmax_backward](
+            "log_softmax_backward",
+            docstring="Log-softmax backward: grad - exp(y)*sum(grad) (Reference / Meta).",
+        )
+        m.def_function[broadcast_add](
+            "broadcast_add",
+            docstring="Broadcasting elementwise add Reference kernel / Meta version.",
+        )
+        m.def_function[broadcast_sub](
+            "broadcast_sub",
+            docstring="Broadcasting elementwise subtract Reference kernel / Meta version.",
+        )
+        m.def_function[broadcast_mul](
+            "broadcast_mul",
+            docstring="Broadcasting elementwise multiply Reference kernel / Meta version.",
+        )
+        m.def_function[broadcast_div](
+            "broadcast_div",
+            docstring="Broadcasting elementwise divide Reference kernel / Meta version.",
+        )
+        m.def_function[neg](
+            "neg",
+            docstring="Elementwise negate Reference kernel / Meta version.",
+        )
+        m.def_function[reduce_to_shape](
+            "reduce_to_shape",
+            docstring="Reduce a gradient to a target shape (broadcasting backward).",
+        )
+        m.def_function[zeros](
+            "zeros",
+            docstring="Create a zeros-filled cpu Tensor or a Meta tensor.",
+        )
+        m.def_function[rand](
+            "rand",
+            docstring="Create a uniform-[0,1) cpu Tensor or a Meta tensor.",
+        )
+        m.def_function[randn](
+            "randn",
+            docstring="Create a standard-normal cpu Tensor or a Meta tensor.",
         )
 
         var mod = m.finalize()
