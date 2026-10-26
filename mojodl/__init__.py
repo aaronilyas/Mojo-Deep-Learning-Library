@@ -9,6 +9,8 @@ except ImportError as e:
         "mojodl engine is not built; run `pixi run build` first"
     ) from e
 
+import os
+
 import numpy as np
 
 memory_stats = _engine.memory_stats
@@ -173,6 +175,78 @@ def ones(shape, dtype=float32, device="cpu", requires_grad=False):
     """
     dims, device_code = _validate_constructor_args("ones", shape, dtype, device)
     t = Tensor._from_core(_call_engine(_engine.ones, tuple(dims), device_code))
+    t._requires_grad = bool(requires_grad)
+    return t
+
+
+def _validate_seed(name, seed):
+    """Validate or draw a 64-bit seed for rand / randn. Runs before allocation."""
+    if seed is None:
+        return int.from_bytes(os.urandom(8), "little")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(
+            f"{name}(): seed must be an int or None, got {type(seed).__name__}"
+        )
+    if seed < 0 or seed >= 2**64:
+        raise ValueError(
+            f"{name}(): seed must be in [0, 2**64), got {seed}"
+        )
+    return seed
+
+
+def rand(shape, dtype=float32, device="cpu", requires_grad=False, seed=None):
+    """Create a cpu or Meta tensor of fp32 uniforms in [0, 1).
+
+    Parameters
+    ----------
+    shape:
+        Tuple or list of non-negative ints.
+    dtype:
+        Only `mojodl.float32` is accepted.
+    device:
+        `"cpu"` (default) allocates storage through accounting and fills with
+        uniforms; `"meta"` allocates nothing and does not generate values.
+    requires_grad:
+        If True, the result is a leaf that tracks ops for `.backward()`
+        (PyTorch semantics). Default False.
+    seed:
+        Optional int in ``[0, 2**64)``. Same seed → bit-identical values.
+        ``None`` (default) draws a fresh 64-bit seed from ``os.urandom``.
+    """
+    dims, device_code = _validate_constructor_args("rand", shape, dtype, device)
+    seed_u = _validate_seed("rand", seed)
+    t = Tensor._from_core(
+        _call_engine(_engine.rand, tuple(dims), device_code, seed_u)
+    )
+    t._requires_grad = bool(requires_grad)
+    return t
+
+
+def randn(shape, dtype=float32, device="cpu", requires_grad=False, seed=None):
+    """Create a cpu or Meta tensor of fp32 standard normals.
+
+    Parameters
+    ----------
+    shape:
+        Tuple or list of non-negative ints.
+    dtype:
+        Only `mojodl.float32` is accepted.
+    device:
+        `"cpu"` (default) allocates storage through accounting and fills with
+        standard normals; `"meta"` allocates nothing and does not generate
+        values.
+    requires_grad:
+        If True, the result is a leaf that tracks ops for `.backward()`
+        (PyTorch semantics). Default False.
+    seed:
+        Optional int in ``[0, 2**64)``. Same seed → bit-identical values.
+        ``None`` (default) draws a fresh 64-bit seed from ``os.urandom``.
+    """
+    dims, device_code = _validate_constructor_args("randn", shape, dtype, device)
+    seed_u = _validate_seed("randn", seed)
+    t = Tensor._from_core(
+        _call_engine(_engine.randn, tuple(dims), device_code, seed_u)
+    )
     t._requires_grad = bool(requires_grad)
     return t
 
@@ -364,6 +438,8 @@ __all__ = [
     "empty",
     "zeros",
     "ones",
+    "rand",
+    "randn",
     "ShapeError",
     "DeviceError",
     "AutogradError",
