@@ -643,3 +643,7 @@ __all__ = [
     "softmax",
     "log_softmax",
 ]
+
+from . import nn
+
+__all__.append("nn")
