@@ -15,7 +15,7 @@ from accounting import (
 )
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
-from ops_reduce import sum_dim, sum_backward
+from ops_reduce import sum_dim, sum_backward, mean_dim, mean_backward
 
 
 @export
@@ -77,6 +77,14 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[sum_backward](
             "sum_backward",
             docstring="Broadcast sum upstream gradient to the input shape.",
+        )
+        m.def_function[mean_dim](
+            "mean_dim",
+            docstring="Mean over all elements or one axis; Reference / Meta.",
+        )
+        m.def_function[mean_backward](
+            "mean_backward",
+            docstring="Broadcast mean upstream gradient times 1/count to input shape.",
         )
 
         var mod = m.finalize()

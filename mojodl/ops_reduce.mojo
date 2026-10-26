@@ -91,6 +91,19 @@ def _product_range(shape: List[Int], start: Int, end: Int) -> Int:
     return p
 
 
+def _reduced_count(shape: List[Int], has_dim: Bool, dim: Int) raises -> Int:
+    """Number of elements averaged into each output slot (0 → NaN forward).
+
+    Whole-tensor / 0-d: product of all dims (scalar shape () → 1). One-axis:
+    the size of that axis after `_normalize_dim`.
+    """
+    var rank = len(shape)
+    if (not has_dim) or rank == 0:
+        return _product_range(shape, 0, rank)
+    var d = _normalize_dim(dim, rank)
+    return shape[d]
+
+
 def sum_dim(
     a_obj: PythonObject,
     dim_obj: PythonObject,
@@ -210,6 +223,132 @@ def sum_backward(
                 for o in range(outer):
                     for i in range(inner):
                         var g_val = g_f[unsafe_offset=o * inner + i]
+                        for r in range(reduced):
+                            var out_idx = (o * reduced + r) * inner + i
+                            o_f[unsafe_offset=out_idx] = g_val
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def mean_dim(
+    a_obj: PythonObject,
+    dim_obj: PythonObject,
+    has_dim_obj: PythonObject,
+    keepdim_obj: PythonObject,
+) raises -> PythonObject:
+    """Mean over all elements or one axis: Reference kernel or Meta version.
+
+    Same dim / keepdim / AxisError rules as `sum_dim` (`_sum_out_shape`). Cpu
+    accumulates in Float64, divides by the reduced count in Float64, stores
+    fp32; a zero count writes NaN. Meta returns a Meta tensor of the output
+    shape with no allocation.
+    """
+    var a = a_obj.downcast_value_ptr[Tensor]()
+    var a_dev = a[].device_code
+    var has_dim = Int(py=has_dim_obj) != 0
+    var dim = Int(py=dim_obj)
+    var keepdim = Int(py=keepdim_obj) != 0
+
+    var out_shape = _sum_out_shape(a[].shape, has_dim, dim, keepdim)
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+    var count = _reduced_count(a[].shape, has_dim, dim)
+
+    if a_dev == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        var o_f = data.value().unsafe_bitcast[Float32]()
+        # Zero count (empty reduction): NaN per PyTorch, including empty input.
+        if count == 0:
+            var n_out = nbytes // 4
+            var nan_f = Float32(Float64(0.0) / Float64(0.0))
+            for i in range(n_out):
+                o_f[unsafe_offset=i] = nan_f
+        else:
+            var a_f = a[].data.value().unsafe_bitcast[Float32]()
+            var rank = len(a[].shape)
+            var inv = Float64(1.0) / Float64(count)
+            # Whole-tensor or 0-d (single element): one Float64 accumulator.
+            if (not has_dim) or rank == 0:
+                var acc: Float64 = 0.0
+                var n = a[].nbytes // 4
+                for i in range(n):
+                    acc = acc + Float64(a_f[unsafe_offset=i])
+                o_f[unsafe_offset=0] = Float32(acc * inv)
+            else:
+                var d = _normalize_dim(dim, rank)
+                var outer = _product_range(a[].shape, 0, d)
+                var reduced = a[].shape[d]
+                var inner = _product_range(a[].shape, d + 1, rank)
+                for o in range(outer):
+                    for i in range(inner):
+                        var acc: Float64 = 0.0
+                        for r in range(reduced):
+                            var in_idx = (o * reduced + r) * inner + i
+                            acc = acc + Float64(a_f[unsafe_offset=in_idx])
+                        var out_idx = o * inner + i
+                        o_f[unsafe_offset=out_idx] = Float32(acc * inv)
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def mean_backward(
+    grad_obj: PythonObject,
+    input_shape_obj: PythonObject,
+    dim_obj: PythonObject,
+    has_dim_obj: PythonObject,
+    keepdim_obj: PythonObject,
+) raises -> PythonObject:
+    """Broadcast mean's upstream gradient times 1/count to the input shape.
+
+    One kernel: allocates only the input-shaped result (no intermediate). Meta
+    returns a Meta tensor of `input_shape` with no allocation. Grad shape must
+    equal `_sum_out_shape` or a ShapeError is raised before any allocation.
+    """
+    var g = grad_obj.downcast_value_ptr[Tensor]()
+    var device_code = g[].device_code
+    var has_dim = Int(py=has_dim_obj) != 0
+    var dim = Int(py=dim_obj)
+    var keepdim = Int(py=keepdim_obj) != 0
+
+    var out_shape = _parse_shape(input_shape_obj)
+    var expected = _sum_out_shape(out_shape, has_dim, dim, keepdim)
+    if not _shapes_equal(g[].shape, expected):
+        _raise_shape_error(g[].shape, expected)
+
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+    var count = _reduced_count(out_shape, has_dim, dim)
+    var scale = Float32(Float64(1.0) / Float64(count))
+
+    if device_code == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        var o_f = data.value().unsafe_bitcast[Float32]()
+        var n_out = nbytes // 4
+        if g[].nbytes < 1:
+            for i in range(n_out):
+                o_f[unsafe_offset=i] = Float32(0.0)
+        else:
+            var g_f = g[].data.value().unsafe_bitcast[Float32]()
+            var rank = len(out_shape)
+            # Whole-tensor or 0-d: broadcast scaled grad everywhere.
+            if (not has_dim) or rank == 0:
+                var g_val = g_f[unsafe_offset=0] * scale
+                for i in range(n_out):
+                    o_f[unsafe_offset=i] = g_val
+            else:
+                var d = _normalize_dim(dim, rank)
+                var outer = _product_range(out_shape, 0, d)
+                var reduced = out_shape[d]
+                var inner = _product_range(out_shape, d + 1, rank)
+                for o in range(outer):
+                    for i in range(inner):
+                        var g_val = g_f[unsafe_offset=o * inner + i] * scale
                         for r in range(reduced):
                             var out_idx = (o * reduced + r) * inner + i
                             o_f[unsafe_offset=out_idx] = g_val

@@ -183,6 +183,47 @@ class SumBackward(Node):
         return [(self.next_functions[0], expanded)]
 
 
+class MeanBackward(Node):
+    """Mean over all axes or one axis: broadcast upstream grad * 1/count.
+
+    Saves no tensors — only the input shape, dim, keepdim, and device.
+    """
+
+    __slots__ = ("next_functions", "input_shape", "input_device", "dim", "keepdim")
+
+    def __init__(
+        self,
+        input_node: Node,
+        input_shape: tuple,
+        input_device: str,
+        dim=None,
+        keepdim: bool = False,
+    ):
+        self.next_functions = (input_node,)
+        self.input_shape = input_shape
+        self.input_device = input_device
+        self.dim = dim
+        self.keepdim = keepdim
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        has_dim = 0 if self.dim is None else 1
+        dim_arg = 0 if self.dim is None else self.dim
+        keepdim_arg = 1 if self.keepdim else 0
+        expanded = _wrap(
+            _call_engine(
+                _engine.mean_backward,
+                grad_output._core,
+                self.input_shape,
+                dim_arg,
+                has_dim,
+                keepdim_arg,
+            )
+        )
+        return [(self.next_functions[0], expanded)]
+
+
 class AddBackward(Node):
     """Elementwise add: route the incoming gradient to each requiring input.
 
@@ -280,6 +321,16 @@ def record_sum(result: Tensor, inp: Tensor, dim=None, keepdim: bool = False) -> 
         return result
     return attach(
         result, SumBackward(nxt, inp.shape, inp.device, dim=dim, keepdim=keepdim)
+    )
+
+
+def record_mean(result: Tensor, inp: Tensor, dim=None, keepdim: bool = False) -> Tensor:
+    """Attach a MeanBackward node when `inp` requires grad."""
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    return attach(
+        result, MeanBackward(nxt, inp.shape, inp.device, dim=dim, keepdim=keepdim)
     )
 
 

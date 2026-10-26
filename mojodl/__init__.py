@@ -277,6 +277,31 @@ class Tensor:
         )
         return autograd.record_sum(result, self, dim=dim, keepdim=bool(keepdim))
 
+    def mean(self, dim=None, keepdim=False):
+        """Reduce all elements, or along one axis, to their mean.
+
+        ``dim`` is ``None`` (all axes) or a single int (negative counts from
+        the end; a 0-d tensor accepts 0 and -1). ``keepdim`` keeps reduced
+        axes as size 1. Bool / non-int ``dim`` raises ``TypeError``. An empty
+        reduction (zero count) yields NaN.
+        """
+        from . import autograd
+
+        if dim is not None:
+            if isinstance(dim, bool) or not isinstance(dim, int):
+                raise TypeError(
+                    f"mean(): dim must be an int or None, got {type(dim).__name__}"
+                )
+        has_dim = 0 if dim is None else 1
+        dim_arg = 0 if dim is None else dim
+        keepdim_arg = 1 if keepdim else 0
+        result = Tensor._from_core(
+            _call_engine(
+                _engine.mean_dim, self._core, dim_arg, has_dim, keepdim_arg
+            )
+        )
+        return autograd.record_mean(result, self, dim=dim, keepdim=bool(keepdim))
+
     def backward(self, retain_graph: bool = False) -> None:
         """Compute gradients of this tensor w.r.t. leaves that require grad.
 
