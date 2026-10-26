@@ -16,7 +16,15 @@ from accounting import (
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
 from ops_linalg import matmul, matmul_nt, matmul_tn
-from ops_activation import relu, relu_backward, exp, log, log_backward
+from ops_activation import (
+    relu,
+    relu_backward,
+    exp,
+    log,
+    log_backward,
+    softmax,
+    softmax_backward,
+)
 
 
 @export
@@ -102,6 +110,14 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[log_backward](
             "log_backward",
             docstring="Log backward: grad / x (Reference / Meta).",
+        )
+        m.def_function[softmax](
+            "softmax",
+            docstring="Softmax along dim Reference kernel / Meta version.",
+        )
+        m.def_function[softmax_backward](
+            "softmax_backward",
+            docstring="Softmax backward: y * (grad - sum(grad*y)) (Reference / Meta).",
         )
 
         var mod = m.finalize()
