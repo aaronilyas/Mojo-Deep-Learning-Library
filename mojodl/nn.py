@@ -389,11 +389,30 @@ class ReLU(Module):
         return x.relu()
 
 
+def _sequential_from_named(modules: OrderedDict) -> Sequential:
+    """Build a Sequential that registers ``modules`` under their existing keys.
+
+    Used by slice indexing so child names match PyTorch (not renumbered).
+    Not part of the public constructor.
+    """
+    seq = Sequential.__new__(Sequential)
+    Module.__init__(seq)
+    for name, module in modules.items():
+        setattr(seq, name, module)
+    return seq
+
+
 class Sequential(Module):
     """Chains child modules in registration order under names ``\"0\"``, ``\"1\"``, ..."""
 
     def __init__(self, *modules):
         super().__init__()
+        for i, module in enumerate(modules):
+            if not isinstance(module, Module):
+                raise TypeError(
+                    f"Sequential(): position {i} is not a Module "
+                    f"(got {type(module).__name__})"
+                )
         for i, module in enumerate(modules):
             setattr(self, str(i), module)
 
@@ -403,8 +422,16 @@ class Sequential(Module):
     def __iter__(self) -> Iterator[Module]:
         return iter(self._modules.values())
 
-    def __getitem__(self, idx: int) -> Module:
-        return list(self._modules.values())[idx]
+    def __getitem__(self, idx):
+        if isinstance(idx, slice):
+            items = list(self._modules.items())[idx]
+            return _sequential_from_named(OrderedDict(items))
+        if isinstance(idx, int):
+            return list(self._modules.values())[idx]
+        raise TypeError(
+            f"Sequential indices must be integers or slices, "
+            f"not {type(idx).__name__}"
+        )
 
     def forward(self, x):
         for module in self:

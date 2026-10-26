@@ -12,6 +12,7 @@ import gc
 import math
 
 import numpy as np
+import pytest
 import torch
 
 import mojodl
@@ -346,3 +347,61 @@ def test_linear_meta_does_not_allocate_and_forward_stays_meta():
     assert out.device == "meta"
     assert out.shape == (5, 32)
     assert mojodl.memory_stats()["current_bytes"] == baseline
+
+
+# ---------------------------------------------------------------------------
+# Sequential: reject non-Module children; slice returns Sequential
+# ---------------------------------------------------------------------------
+
+
+def test_sequential_rejects_non_module_children_with_typeerror():
+    with pytest.raises(TypeError) as exc_info:
+        mojodl.nn.Sequential(
+            mojodl.nn.Linear(2, 2),
+            123,
+            mojodl.nn.ReLU(),
+        )
+    assert "int" in str(exc_info.value)
+
+    with pytest.raises(TypeError):
+        mojodl.nn.Sequential(mojodl.nn.Parameter(mojodl.zeros((2,))))
+
+
+def test_sequential_slice_returns_sequential_keeping_child_names():
+    a = mojodl.nn.Linear(2, 2)
+    b = mojodl.nn.ReLU()
+    c = mojodl.nn.Linear(2, 2)
+    seq = mojodl.nn.Sequential(a, b, c)
+    torch_seq = torch.nn.Sequential(
+        torch.nn.Linear(2, 2),
+        torch.nn.ReLU(),
+        torch.nn.Linear(2, 2),
+    )
+
+    sliced = seq[1:]
+    assert isinstance(sliced, mojodl.nn.Sequential)
+    assert len(sliced) == 2
+    assert sliced[0] is b
+    assert sliced[1] is c
+    assert _named_module_names(sliced) == _named_module_names(torch_seq[1:])
+    assert _named_module_names(sliced) == ["", "1", "2"]
+
+    stepped = seq[::2]
+    assert isinstance(stepped, mojodl.nn.Sequential)
+    assert len(stepped) == 2
+    assert stepped[0] is a
+    assert stepped[1] is c
+    assert _named_module_names(stepped) == _named_module_names(torch_seq[::2])
+    assert _named_module_names(stepped) == ["", "0", "2"]
+
+
+def test_sequential_index_out_of_range_raises_indexerror():
+    a = mojodl.nn.Linear(2, 2)
+    b = mojodl.nn.ReLU()
+    c = mojodl.nn.Linear(2, 2)
+    seq = mojodl.nn.Sequential(a, b, c)
+
+    with pytest.raises(IndexError):
+        seq[3]
+    with pytest.raises(IndexError):
+        seq[-4]
