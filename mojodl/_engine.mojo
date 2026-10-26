@@ -24,6 +24,8 @@ from ops_activation import (
     log_backward,
     softmax,
     softmax_backward,
+    log_softmax,
+    log_softmax_backward,
 )
 
 
@@ -118,6 +120,14 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[softmax_backward](
             "softmax_backward",
             docstring="Softmax backward: y * (grad - sum(grad*y)) (Reference / Meta).",
+        )
+        m.def_function[log_softmax](
+            "log_softmax",
+            docstring="Log-softmax along dim Reference kernel / Meta version.",
+        )
+        m.def_function[log_softmax_backward](
+            "log_softmax_backward",
+            docstring="Log-softmax backward: grad - exp(y)*sum(grad) (Reference / Meta).",
         )
 
         var mod = m.finalize()

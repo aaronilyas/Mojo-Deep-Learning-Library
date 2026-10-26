@@ -297,6 +297,15 @@ class Tensor:
         )
         return autograd.record_softmax(result, self, dim)
 
+    def log_softmax(self, dim: int):
+        """Log-softmax along dimension ``dim`` (negative counts from the end)."""
+        from . import autograd
+
+        result = Tensor._from_core(
+            _call_engine(_engine.log_softmax, self._core, dim)
+        )
+        return autograd.record_log_softmax(result, self, dim)
+
     def backward(self, retain_graph: bool = False) -> None:
         """Compute gradients of this tensor w.r.t. leaves that require grad.
 
@@ -345,6 +354,11 @@ def softmax(x: Tensor, dim: int) -> Tensor:
     return x.softmax(dim)
 
 
+def log_softmax(x: Tensor, dim: int) -> Tensor:
+    """Log-softmax along dimension ``dim``. Equivalent to ``x.log_softmax(dim)``."""
+    return x.log_softmax(dim)
+
+
 __all__ = [
     "Tensor",
     "float32",
@@ -360,4 +374,5 @@ __all__ = [
     "exp",
     "log",
     "softmax",
+    "log_softmax",
 ]

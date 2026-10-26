@@ -347,3 +347,121 @@ def softmax_backward(
                     o_f[unsafe_offset=idx] = Float32(yi * (gi - dot))
 
     return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def log_softmax(x_obj: PythonObject, dim_obj: PythonObject) raises -> PythonObject:
+    """Log-softmax along `dim`: Reference kernel or Meta version.
+
+    Output shape matches the input. `dim` is validated/normalized by
+    `_normalize_dim` (same helper as softmax). Reference: per (outer, inner)
+    lane, subtract the lane max, accumulate sum of exp in Float64, then write
+    Float32((x - max) - log(sum)). Meta returns a Meta tensor with no
+    allocation; cpu allocates through accounting (nothing when the output has
+    zero elements).
+    """
+    var x = x_obj.downcast_value_ptr[Tensor]()
+    var x_dev = x[].device_code
+    var dim = Int(py=dim_obj)
+
+    # Validate dim before any allocation (Meta and cpu share one check).
+    var d = _normalize_dim(dim, x[].shape)
+    var ndim = len(x[].shape)
+    var outer = 1
+    var axis_len = 1
+    var inner = 1
+    if ndim > 0:
+        outer = _product_range(x[].shape, 0, d)
+        axis_len = x[].shape[d]
+        inner = _product_range(x[].shape, d + 1, ndim)
+
+    var out_shape = _same_out_shape(x[].shape)
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if x_dev == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        var x_f = x[].data.value().unsafe_bitcast[Float32]()
+        var o_f = data.value().unsafe_bitcast[Float32]()
+        for o in range(outer):
+            for i in range(inner):
+                var base = o * axis_len * inner + i
+                var lane_max = Float64(x_f[unsafe_offset=base])
+                for r in range(1, axis_len):
+                    var v = Float64(x_f[unsafe_offset=base + r * inner])
+                    if v > lane_max:
+                        lane_max = v
+                var lane_sum: Float64 = 0.0
+                for r in range(axis_len):
+                    var e = math_exp(
+                        Float64(x_f[unsafe_offset=base + r * inner]) - lane_max
+                    )
+                    lane_sum = lane_sum + e
+                var log_sum = math_log(lane_sum)
+                for r in range(axis_len):
+                    var shifted = (
+                        Float64(x_f[unsafe_offset=base + r * inner]) - lane_max
+                    )
+                    o_f[unsafe_offset=base + r * inner] = Float32(
+                        shifted - log_sum
+                    )
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
+
+
+def log_softmax_backward(
+    grad_obj: PythonObject, y_obj: PythonObject, dim_obj: PythonObject
+) raises -> PythonObject:
+    """Log-softmax backward: grad_in = grad - exp(y) * sum_dim(grad).
+
+    Devices must match (DeviceError naming "log_softmax"). Shapes must match
+    via `_checked_out_shape`. Same dim helper as forward. Per-lane sum of
+    grad is accumulated in Float64. Meta returns a Meta tensor with no
+    allocation; cpu allocates through accounting.
+    """
+    var grad = grad_obj.downcast_value_ptr[Tensor]()
+    var y = y_obj.downcast_value_ptr[Tensor]()
+
+    var grad_dev = grad[].device_code
+    _ensure_same_device(grad_dev, y[].device_code, "log_softmax")
+
+    var dim = Int(py=dim_obj)
+    var out_shape = _checked_out_shape(grad[].shape, y[].shape)
+    # Re-validate dim against the shared rank so Meta and cpu agree on errors.
+    var d = _normalize_dim(dim, out_shape)
+    var ndim = len(out_shape)
+    var outer = 1
+    var axis_len = 1
+    var inner = 1
+    if ndim > 0:
+        outer = _product_range(out_shape, 0, d)
+        axis_len = out_shape[d]
+        inner = _product_range(out_shape, d + 1, ndim)
+
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if grad_dev == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        var g_f = grad[].data.value().unsafe_bitcast[Float32]()
+        var y_f = y[].data.value().unsafe_bitcast[Float32]()
+        var o_f = data.value().unsafe_bitcast[Float32]()
+        for o in range(outer):
+            for i in range(inner):
+                var base = o * axis_len * inner + i
+                var g_sum: Float64 = 0.0
+                for r in range(axis_len):
+                    var idx = base + r * inner
+                    g_sum = g_sum + Float64(g_f[unsafe_offset=idx])
+                for r in range(axis_len):
+                    var idx = base + r * inner
+                    var ey = math_exp(Float64(y_f[unsafe_offset=idx]))
+                    var gi = Float64(g_f[unsafe_offset=idx])
+                    o_f[unsafe_offset=idx] = Float32(gi - ey * g_sum)
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)

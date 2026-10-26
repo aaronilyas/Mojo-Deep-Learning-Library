@@ -479,6 +479,51 @@ def record_softmax(result: Tensor, inp: Tensor, dim: int) -> Tensor:
     return attach(result, SoftmaxBackward(nxt, saved_out, dim))
 
 
+class LogSoftmaxBackward(Node):
+    """Log-softmax: grad_in = grad - exp(y) * sum_dim(grad), using the saved output.
+
+    Saves a fresh non-grad Tensor wrapping the result's engine core so the
+    result object itself is not held (avoids result → grad_fn → saved → result),
+    plus the dim used in the forward pass.
+    """
+
+    __slots__ = ("next_functions", "_saved_tensors", "_saved_released", "dim")
+
+    def __init__(self, next_x: Node, saved_out: Tensor, dim: int):
+        self.next_functions = (next_x,)
+        self.dim = dim
+        self.save_for_backward(saved_out)
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        (saved_out,) = self.saved_tensors()
+        grad_x = _wrap(
+            _call_engine(
+                _engine.log_softmax_backward,
+                grad_output._core,
+                saved_out._core,
+                self.dim,
+            )
+        )
+        return [(self.next_functions[0], grad_x)]
+
+
+def record_log_softmax(result: Tensor, inp: Tensor, dim: int) -> Tensor:
+    """Attach a LogSoftmaxBackward node when `inp` requires grad.
+
+    Saves ``Tensor._from_core(result._core)`` (same storage, no grad_fn) so
+    dropping ``result`` can free its storage by refcounting.
+    """
+    from . import Tensor
+
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    saved_out = Tensor._from_core(result._core)
+    return attach(result, LogSoftmaxBackward(nxt, saved_out, dim))
+
+
 def _ones_like_seed(tensor: Tensor) -> Tensor:
     """Engine-created ones tensor with the output's shape and device (seed grad)."""
     from . import _engine
