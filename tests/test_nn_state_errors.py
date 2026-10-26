@@ -121,6 +121,19 @@ def test_load_state_dict_non_float32_convertible_raises_state_dict_error(bad_val
     assert "0.bias" in str(exc_info.value)
 
 
+def test_load_state_dict_complex_raises_state_dict_error():
+    model, good = _model_and_good()
+    bad = {k: v.copy() for k, v in good.items()}
+    # Right shape for 0.bias (8,); nonzero imaginary parts must be rejected,
+    # not silently dropped by a float32 cast.
+    bad["0.bias"] = np.ones(good["0.bias"].shape, dtype=np.complex64) * (1 + 2j)
+
+    with pytest.raises(mojodl.StateDictError) as exc_info:
+        model.load_state_dict(bad)
+
+    assert "0.bias" in str(exc_info.value)
+
+
 def test_load_state_dict_non_mapping_raises_type_error():
     model, good = _model_and_good()
     pairs = list(good.items())
@@ -170,6 +183,12 @@ def _bad_ragged(good):
     return bad
 
 
+def _bad_complex(good):
+    bad = {k: v.copy() for k, v in good.items()}
+    bad["0.bias"] = np.ones(good["0.bias"].shape, dtype=np.complex64) * (1 + 2j)
+    return bad
+
+
 @pytest.mark.parametrize(
     "make_bad",
     [
@@ -180,6 +199,7 @@ def _bad_ragged(good):
         _multiple_problems,
         _bad_string,
         _bad_ragged,
+        _bad_complex,
     ],
     ids=[
         "unexpected_added",
@@ -189,6 +209,7 @@ def _bad_ragged(good):
         "multiple_problems",
         "bad_string",
         "bad_ragged",
+        "complex",
     ],
 )
 def test_rejected_load_state_dict_is_atomic(make_bad):

@@ -264,3 +264,26 @@ def test_load_torch_state_dict_makes_user_module_forward_match_torch():
         rtol=RTOL,
         atol=ATOL,
     )
+
+
+# ---------------------------------------------------------------------------
+# load_state_dict accepts array-likes with non-NumPy .dtype (e.g. torch)
+# ---------------------------------------------------------------------------
+
+
+def test_load_state_dict_accepts_torch_tensors_via_array_protocol():
+    """Torch CPU tensors expose .dtype as torch.dtype, not a NumPy dtype.
+
+    load_state_dict must accept them via the array protocol (__array__) so
+    callers can pass torch_model.state_dict() directly without converting.
+    """
+    torch_model = _torch_mlp()
+    model = _mlp(seed=0)
+
+    model.load_state_dict(torch_model.state_dict())
+
+    torch_state = torch_model.state_dict()
+    for name, param in model.named_parameters():
+        np.testing.assert_array_equal(
+            param.numpy(), torch_state[name].numpy()
+        )

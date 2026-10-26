@@ -280,12 +280,23 @@ class Module:
         for name in sorted(param_names & state_names):
             param = params[name]
             value = state[name]
+            # Infer dtype via asarray first so non-NumPy dtypes (e.g. torch)
+            # are handled; reject complex before a float32 cast that would
+            # emit ComplexWarning and drop the imaginary part.
             try:
-                arr = np.asarray(value, dtype=np.float32)
+                arr = np.asarray(value)
             except (TypeError, ValueError):
                 problems.append(f"cannot convert {name} to float32")
                 continue
+            if np.issubdtype(arr.dtype, np.complexfloating):
+                problems.append(f"cannot convert {name} to float32")
+                continue
             if arr.dtype == object:
+                problems.append(f"cannot convert {name} to float32")
+                continue
+            try:
+                arr = np.asarray(arr, dtype=np.float32)
+            except (TypeError, ValueError):
                 problems.append(f"cannot convert {name} to float32")
                 continue
             if tuple(arr.shape) != tuple(param.shape):
