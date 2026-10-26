@@ -178,6 +178,55 @@ def test_relu_listed_in_all():
     assert "relu" in mojodl.__all__
 
 
+_RELU_SPECIAL_VALUES = np.array(
+    [np.nan, -0.0, 0.0, -1.0, 1.0, np.inf, -np.inf], dtype=np.float32
+)
+
+
+def test_relu_special_values_forward_matches_torch():
+    """NaN propagates; -0.0 keeps its sign bit (PyTorch parity)."""
+    x_np = _RELU_SPECIAL_VALUES.copy()
+    x = mojodl.Tensor(x_np)
+
+    result = x.relu()
+    expected = torch.relu(torch.from_numpy(x_np.copy())).numpy()
+
+    np.testing.assert_allclose(
+        result.numpy(),
+        expected,
+        rtol=RELU_RTOL,
+        atol=RELU_ATOL,
+        equal_nan=True,
+    )
+    # Compare sign of zeros (-0.0 vs +0.0); assert_allclose treats them equal.
+    np.testing.assert_array_equal(
+        np.signbit(result.numpy()), np.signbit(expected)
+    )
+
+
+def test_relu_special_values_backward_matches_torch():
+    """Upstream grad passes through at NaN; zero at ±0.0 and negatives."""
+    x_np = _RELU_SPECIAL_VALUES.copy()
+    w_np = np.full_like(x_np, 10.0)
+
+    x = mojodl.Tensor(x_np, requires_grad=True)
+    w = mojodl.Tensor(w_np)
+    (x.relu() * w).sum().backward()
+
+    torch_x = torch.tensor(x_np, requires_grad=True)
+    torch_w = torch.tensor(w_np)
+    (torch.relu(torch_x) * torch_w).sum().backward()
+
+    assert isinstance(x.grad, mojodl.Tensor)
+    np.testing.assert_allclose(
+        x.grad.numpy(),
+        torch_x.grad.numpy(),
+        rtol=RELU_RTOL,
+        atol=RELU_ATOL,
+        equal_nan=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # exp
 # ---------------------------------------------------------------------------

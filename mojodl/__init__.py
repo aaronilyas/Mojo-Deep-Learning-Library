@@ -9,6 +9,8 @@ except ImportError as e:
         "mojodl engine is not built; run `pixi run build` first"
     ) from e
 
+import operator
+
 import numpy as np
 
 memory_stats = _engine.memory_stats
@@ -46,6 +48,20 @@ def _map_mojo_error(exc: BaseException) -> BaseException:
             clean = msg[idx + len(tag) :].lstrip()
             return cls(clean)
     return exc
+
+
+def _require_int_dim(dim, op: str) -> int:
+    """Validate ``dim`` for softmax / log_softmax; return a plain Python int.
+
+    Accepts any object with ``__index__`` except ``bool`` (so ``int`` and
+    NumPy integer scalars work). Anything else raises ``TypeError`` naming
+    ``op`` and the received type.
+    """
+    if isinstance(dim, bool) or not hasattr(dim, "__index__"):
+        raise TypeError(
+            f"{op}(): dim must be an integer, got {type(dim).__name__}"
+        )
+    return operator.index(dim)
 
 
 def _call_engine(fn, *args):
@@ -292,6 +308,7 @@ class Tensor:
         """Softmax along dimension ``dim`` (negative counts from the end)."""
         from . import autograd
 
+        dim = _require_int_dim(dim, "softmax")
         result = Tensor._from_core(
             _call_engine(_engine.softmax, self._core, dim)
         )
@@ -301,6 +318,7 @@ class Tensor:
         """Log-softmax along dimension ``dim`` (negative counts from the end)."""
         from . import autograd
 
+        dim = _require_int_dim(dim, "log_softmax")
         result = Tensor._from_core(
             _call_engine(_engine.log_softmax, self._core, dim)
         )

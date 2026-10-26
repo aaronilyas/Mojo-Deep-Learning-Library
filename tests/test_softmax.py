@@ -462,3 +462,87 @@ def test_log_softmax_meta_backward_fills_meta_grad_without_allocating():
 
 def test_log_softmax_listed_in_all():
     assert "log_softmax" in mojodl.__all__
+
+
+# ---------------------------------------------------------------------------
+# dim type checking (softmax / log_softmax)
+# ---------------------------------------------------------------------------
+
+_INVALID_DIMS = [True, 1.0, "1", None]
+_INVALID_DIM_IDS = ["bool", "float", "str", "none"]
+
+
+def _cpu_or_meta(shape, device):
+    if device == "meta":
+        return mojodl.empty(shape, device="meta")
+    return mojodl.Tensor(np.zeros(shape, dtype=np.float32))
+
+
+@pytest.mark.parametrize("dim", _INVALID_DIMS, ids=_INVALID_DIM_IDS)
+@pytest.mark.parametrize("device", ["cpu", "meta"], ids=["cpu", "meta"])
+def test_softmax_invalid_dim_type_raises_type_error(dim, device):
+    x = _cpu_or_meta((2, 3), device)
+
+    with pytest.raises(TypeError):
+        x.softmax(dim)
+    with pytest.raises(TypeError):
+        mojodl.softmax(x, dim)
+
+
+@pytest.mark.parametrize("dim", _INVALID_DIMS, ids=_INVALID_DIM_IDS)
+@pytest.mark.parametrize("device", ["cpu", "meta"], ids=["cpu", "meta"])
+def test_log_softmax_invalid_dim_type_raises_type_error(dim, device):
+    x = _cpu_or_meta((2, 3), device)
+
+    with pytest.raises(TypeError):
+        x.log_softmax(dim)
+    with pytest.raises(TypeError):
+        mojodl.log_softmax(x, dim)
+
+
+def test_softmax_numpy_int64_dim_matches_int():
+    x_np = _seeded_standard_normal((3, 4))
+    x = mojodl.Tensor(x_np)
+    dim = np.int64(1)
+
+    result = x.softmax(dim)
+    expected = x.softmax(1)
+
+    np.testing.assert_allclose(
+        result.numpy(),
+        expected.numpy(),
+        rtol=SOFTMAX_RTOL,
+        atol=SOFTMAX_ATOL,
+    )
+    result_fn = mojodl.softmax(x, dim)
+    expected_fn = mojodl.softmax(x, 1)
+    np.testing.assert_allclose(
+        result_fn.numpy(),
+        expected_fn.numpy(),
+        rtol=SOFTMAX_RTOL,
+        atol=SOFTMAX_ATOL,
+    )
+
+
+def test_log_softmax_numpy_int64_dim_matches_int():
+    x_np = _seeded_standard_normal((3, 4))
+    x = mojodl.Tensor(x_np)
+    dim = np.int64(1)
+
+    result = x.log_softmax(dim)
+    expected = x.log_softmax(1)
+
+    np.testing.assert_allclose(
+        result.numpy(),
+        expected.numpy(),
+        rtol=LOG_SOFTMAX_RTOL,
+        atol=LOG_SOFTMAX_ATOL,
+    )
+    result_fn = mojodl.log_softmax(x, dim)
+    expected_fn = mojodl.log_softmax(x, 1)
+    np.testing.assert_allclose(
+        result_fn.numpy(),
+        expected_fn.numpy(),
+        rtol=LOG_SOFTMAX_RTOL,
+        atol=LOG_SOFTMAX_ATOL,
+    )

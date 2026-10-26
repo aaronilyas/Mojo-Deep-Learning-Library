@@ -72,9 +72,10 @@ def _product_range(shape: List[Int], start: Int, end: Int) -> Int:
 def relu(x_obj: PythonObject) raises -> PythonObject:
     """Elementwise ReLU: Reference kernel or Meta version.
 
-    Output shape matches the input (`_same_out_shape`). Reference: out = x if
-    x > 0 else 0. Meta returns a Meta tensor with no allocation; cpu allocates
-    through accounting (nothing when the output has zero elements).
+    Output shape matches the input (`_same_out_shape`). Reference follows
+    PyTorch: out = 0 where x < 0, else x (so NaN → NaN, -0.0 → -0.0,
+    +inf → +inf). Meta returns a Meta tensor with no allocation; cpu
+    allocates through accounting (nothing when the output has zero elements).
     """
     var x = x_obj.downcast_value_ptr[Tensor]()
     var x_dev = x[].device_code
@@ -93,21 +94,23 @@ def relu(x_obj: PythonObject) raises -> PythonObject:
         var n = nbytes // 4
         for i in range(n):
             var v = x_f[unsafe_offset=i]
-            if v > Float32(0.0):
-                o_f[unsafe_offset=i] = v
-            else:
+            # PyTorch: zero only where x < 0; keep x otherwise (NaN, -0.0).
+            if v < Float32(0.0):
                 o_f[unsafe_offset=i] = 0.0
+            else:
+                o_f[unsafe_offset=i] = v
 
     return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
 
 
 def relu_backward(grad_obj: PythonObject, x_obj: PythonObject) raises -> PythonObject:
-    """ReLU backward: grad_in = grad where x > 0 else 0 (Reference or Meta).
+    """ReLU backward: threshold_backward — zero where x <= 0, else pass grad.
 
     Devices must match (DeviceError naming "relu"). Shapes must match via
-    `_checked_out_shape` so Reference and Meta share one check. Exact-zero
-    inputs get gradient 0 (matches PyTorch). Meta returns a Meta tensor with
-    no allocation; cpu allocates through accounting.
+    `_checked_out_shape` so Reference and Meta share one check. Matches
+    PyTorch: NaN inputs pass the gradient through; ±0.0 and negatives get 0.
+    Meta returns a Meta tensor with no allocation; cpu allocates through
+    accounting.
     """
     var grad = grad_obj.downcast_value_ptr[Tensor]()
     var x = x_obj.downcast_value_ptr[Tensor]()
@@ -129,10 +132,11 @@ def relu_backward(grad_obj: PythonObject, x_obj: PythonObject) raises -> PythonO
         var o_f = data.value().unsafe_bitcast[Float32]()
         var n = nbytes // 4
         for i in range(n):
-            if x_f[unsafe_offset=i] > Float32(0.0):
-                o_f[unsafe_offset=i] = g_f[unsafe_offset=i]
-            else:
+            # PyTorch threshold_backward: zero where x <= 0 (NaN keeps grad).
+            if x_f[unsafe_offset=i] <= Float32(0.0):
                 o_f[unsafe_offset=i] = 0.0
+            else:
+                o_f[unsafe_offset=i] = g_f[unsafe_offset=i]
 
     return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)
 
