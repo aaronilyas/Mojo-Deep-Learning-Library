@@ -1,13 +1,14 @@
-"""Optimizers: SGD (with optional momentum) and shared Optimizer base.
+"""Optimizers: SGD (with optional momentum), Adam, and shared Optimizer base.
 
 Parameter-list ownership and validation live on ``Optimizer``. Update math
-runs in the Mojo engine (``sgd_step`` / ``sgd_momentum_step``) so Meta
-dry-runs allocate nothing. Optimizer-state buffers are allocated through a
-single helper on ``Optimizer``. Adam and ``zero_grad`` are later slices.
+runs in the Mojo engine (``sgd_step`` / ``sgd_momentum_step`` / ``adam_step``)
+so Meta dry-runs allocate nothing. Optimizer-state buffers are allocated
+through a single helper on ``Optimizer``. ``zero_grad`` is a later slice.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 
 from . import Tensor, _call_engine, _engine, zeros
@@ -103,4 +104,84 @@ class SGD(Optimizer):
             )
 
 
-__all__ = ["Optimizer", "SGD"]
+class Adam(Optimizer):
+    """Adam optimizer matching ``torch.optim.Adam`` (weight_decay=0, amsgrad=False).
+
+    Per parameter on each update: ``step += 1`` (Python int);
+    ``m ← β1·m + (1−β1)·g``; ``v ← β2·v + (1−β2)·g·g``; bias corrections
+    ``bc1 = 1 − β1^step``, ``bc2 = 1 − β2^step`` (Python floats);
+    ``step_size = lr / bc1``; ``denom = sqrt(v) / sqrt(bc2) + eps``;
+    ``p ← p − step_size · m / denom``. Moments are zero-initialized lazily
+    via ``_allocate_state`` on a parameter's first update. Parameters whose
+    ``.grad`` is None are skipped and get no state. Element math runs in the
+    Mojo ``adam_step`` kernel in place; after state exists, ``step`` allocates
+    nothing.
+    """
+
+    def __init__(
+        self,
+        params: Iterable[Tensor],
+        lr: float = 1e-3,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+    ) -> None:
+        if lr < 0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if eps < 0:
+            raise ValueError(f"Invalid epsilon value: {eps}")
+        beta1, beta2 = betas
+        if not 0.0 <= beta1 < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 0: {beta1}")
+        if not 0.0 <= beta2 < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 1: {beta2}")
+        super().__init__(params)
+        self.lr = float(lr)
+        self.betas = (float(beta1), float(beta2))
+        self.eps = float(eps)
+        # id(param) -> first / second moment; step count is a Python int
+        self._exp_avg: dict[int, Tensor] = {}
+        self._exp_avg_sq: dict[int, Tensor] = {}
+        self._steps: dict[int, int] = {}
+
+    def step(self) -> None:
+        lr = self.lr
+        beta1, beta2 = self.betas
+        eps = self.eps
+        exp_avg = self._exp_avg
+        exp_avg_sq = self._exp_avg_sq
+        steps = self._steps
+        for p in self.params:
+            g = p.grad
+            if g is None:
+                continue
+            key = id(p)
+            m = exp_avg.get(key)
+            if m is None:
+                m = self._allocate_state(p)
+                v = self._allocate_state(p)
+                exp_avg[key] = m
+                exp_avg_sq[key] = v
+                steps[key] = 0
+            else:
+                v = exp_avg_sq[key]
+            step = steps[key] + 1
+            steps[key] = step
+            bc1 = 1.0 - beta1**step
+            bc2 = 1.0 - beta2**step
+            step_size = lr / bc1
+            sqrt_bc2 = math.sqrt(bc2)
+            _call_engine(
+                _engine.adam_step,
+                p._core,
+                m._core,
+                v._core,
+                g._core,
+                beta1,
+                beta2,
+                step_size,
+                sqrt_bc2,
+                eps,
+            )
+
+
+__all__ = ["Optimizer", "SGD", "Adam"]
