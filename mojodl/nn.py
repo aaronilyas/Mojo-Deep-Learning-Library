@@ -222,6 +222,36 @@ class Module:
         for _, param in self.named_parameters(recurse=recurse):
             yield param
 
+    def state_dict(self) -> OrderedDict[str, object]:
+        """Export Parameters as fresh float32 NumPy copies keyed by qualified name.
+
+        Order matches ``named_parameters()``. Each value is an independent
+        ``numpy`` array; mutating it does not change the Module.
+        """
+        return OrderedDict(
+            (name, param.numpy()) for name, param in self.named_parameters()
+        )
+
+    def load_state_dict(self, state) -> None:
+        """Import Parameter values from a name→array mapping.
+
+        For each name that exists on this Module, replaces that Parameter's
+        engine storage with a fresh float32 copy of the source value. The
+        Parameter object identity, ``requires_grad``, ``.grad``, and leaf
+        status are preserved; no autograd graph is recorded. Extra or missing
+        names are ignored in this slice.
+        """
+        params = dict(self.named_parameters())
+        for name, value in state.items():
+            param = params.get(name)
+            if param is None:
+                continue
+            # Tensor() copies via np.asarray(..., dtype=float32) into accounted
+            # storage. Swap _core only so identity / grad / leafness stay put.
+            with no_grad():
+                fresh = Tensor(value)
+            param._core = fresh._core
+
 
 def _require_nonneg_int(name: str, value) -> int:
     """Validate a Linear size argument: non-negative int, bool rejected."""
