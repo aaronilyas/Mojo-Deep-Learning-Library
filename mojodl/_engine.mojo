@@ -27,6 +27,15 @@ from ops_activation import (
     log_softmax,
     log_softmax_backward,
 )
+from ops_elementwise import (
+    broadcast_add,
+    broadcast_sub,
+    broadcast_mul,
+    broadcast_div,
+    neg,
+    reduce_to_shape,
+)
+from ops_constructors import zeros, rand, randn
 
 
 @export
@@ -128,6 +137,42 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[log_softmax_backward](
             "log_softmax_backward",
             docstring="Log-softmax backward: grad - exp(y)*sum(grad) (Reference / Meta).",
+        )
+        m.def_function[broadcast_add](
+            "broadcast_add",
+            docstring="Broadcasting elementwise add Reference kernel / Meta version.",
+        )
+        m.def_function[broadcast_sub](
+            "broadcast_sub",
+            docstring="Broadcasting elementwise subtract Reference kernel / Meta version.",
+        )
+        m.def_function[broadcast_mul](
+            "broadcast_mul",
+            docstring="Broadcasting elementwise multiply Reference kernel / Meta version.",
+        )
+        m.def_function[broadcast_div](
+            "broadcast_div",
+            docstring="Broadcasting elementwise divide Reference kernel / Meta version.",
+        )
+        m.def_function[neg](
+            "neg",
+            docstring="Elementwise negate Reference kernel / Meta version.",
+        )
+        m.def_function[reduce_to_shape](
+            "reduce_to_shape",
+            docstring="Reduce a gradient to a target shape (broadcasting backward).",
+        )
+        m.def_function[zeros](
+            "zeros",
+            docstring="Create a zeros-filled cpu Tensor or a Meta tensor.",
+        )
+        m.def_function[rand](
+            "rand",
+            docstring="Create a uniform-[0,1) cpu Tensor or a Meta tensor.",
+        )
+        m.def_function[randn](
+            "randn",
+            docstring="Create a standard-normal cpu Tensor or a Meta tensor.",
         )
 
         var mod = m.finalize()

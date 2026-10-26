@@ -10,6 +10,7 @@ except ImportError as e:
     ) from e
 
 import operator
+import os
 
 import numpy as np
 
@@ -95,6 +96,38 @@ _DEVICE_CPU = 0
 _DEVICE_META = 1
 
 
+def _validate_constructor_args(name, shape, dtype, device):
+    """Shared validation for empty / zeros / ones. Returns (dims, device_code)."""
+    if dtype is not float32 and dtype != float32:
+        raise TypeError(
+            f"{name}(): only mojodl.float32 is supported, got {dtype!r}"
+        )
+    if device == "cpu":
+        device_code = _DEVICE_CPU
+    elif device == "meta":
+        device_code = _DEVICE_META
+    else:
+        raise ValueError(
+            f"{name}(): unknown device {device!r}; expected 'cpu' or 'meta'"
+        )
+    if not isinstance(shape, (tuple, list)):
+        raise TypeError(
+            f"{name}(): shape must be a tuple or list of ints, got {type(shape).__name__}"
+        )
+    dims = []
+    for i, d in enumerate(shape):
+        if isinstance(d, bool) or not isinstance(d, int):
+            raise TypeError(
+                f"{name}(): shape[{i}] must be an int, got {type(d).__name__}"
+            )
+        if d < 0:
+            raise ValueError(
+                f"{name}(): shape[{i}] must be non-negative, got {d}"
+            )
+        dims.append(d)
+    return dims, device_code
+
+
 def empty(shape, dtype=float32, device="cpu", requires_grad=False):
     """Create an uninitialized cpu tensor or a Meta tensor (shape + dtype only).
 
@@ -111,34 +144,124 @@ def empty(shape, dtype=float32, device="cpu", requires_grad=False):
         If True, the result is a leaf that tracks ops for `.backward()`
         (PyTorch semantics). Default False.
     """
-    if dtype is not float32 and dtype != float32:
-        raise TypeError(
-            f"empty(): only mojodl.float32 is supported, got {dtype!r}"
-        )
-    if device == "cpu":
-        device_code = _DEVICE_CPU
-    elif device == "meta":
-        device_code = _DEVICE_META
-    else:
-        raise ValueError(
-            f"empty(): unknown device {device!r}; expected 'cpu' or 'meta'"
-        )
-    if not isinstance(shape, (tuple, list)):
-        raise TypeError(
-            f"empty(): shape must be a tuple or list of ints, got {type(shape).__name__}"
-        )
-    dims = []
-    for i, d in enumerate(shape):
-        if isinstance(d, bool) or not isinstance(d, int):
-            raise TypeError(
-                f"empty(): shape[{i}] must be an int, got {type(d).__name__}"
-            )
-        if d < 0:
-            raise ValueError(
-                f"empty(): shape[{i}] must be non-negative, got {d}"
-            )
-        dims.append(d)
+    dims, device_code = _validate_constructor_args("empty", shape, dtype, device)
     t = Tensor._from_core(_call_engine(_engine.empty, tuple(dims), device_code))
+    t._requires_grad = bool(requires_grad)
+    return t
+
+
+def zeros(shape, dtype=float32, device="cpu", requires_grad=False):
+    """Create a cpu or Meta tensor filled with 0.0.
+
+    Parameters
+    ----------
+    shape:
+        Tuple or list of non-negative ints.
+    dtype:
+        Only `mojodl.float32` is accepted.
+    device:
+        `"cpu"` (default) allocates storage through accounting and fills with
+        0.0; `"meta"` allocates nothing.
+    requires_grad:
+        If True, the result is a leaf that tracks ops for `.backward()`
+        (PyTorch semantics). Default False.
+    """
+    dims, device_code = _validate_constructor_args("zeros", shape, dtype, device)
+    t = Tensor._from_core(_call_engine(_engine.zeros, tuple(dims), device_code))
+    t._requires_grad = bool(requires_grad)
+    return t
+
+
+def ones(shape, dtype=float32, device="cpu", requires_grad=False):
+    """Create a cpu or Meta tensor filled with 1.0.
+
+    Parameters
+    ----------
+    shape:
+        Tuple or list of non-negative ints.
+    dtype:
+        Only `mojodl.float32` is accepted.
+    device:
+        `"cpu"` (default) allocates storage through accounting and fills with
+        1.0; `"meta"` allocates nothing.
+    requires_grad:
+        If True, the result is a leaf that tracks ops for `.backward()`
+        (PyTorch semantics). Default False.
+    """
+    dims, device_code = _validate_constructor_args("ones", shape, dtype, device)
+    t = Tensor._from_core(_call_engine(_engine.ones, tuple(dims), device_code))
+    t._requires_grad = bool(requires_grad)
+    return t
+
+
+def _validate_seed(name, seed):
+    """Validate or draw a 64-bit seed for rand / randn. Runs before allocation."""
+    if seed is None:
+        return int.from_bytes(os.urandom(8), "little")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(
+            f"{name}(): seed must be an int or None, got {type(seed).__name__}"
+        )
+    if seed < 0 or seed >= 2**64:
+        raise ValueError(
+            f"{name}(): seed must be in [0, 2**64), got {seed}"
+        )
+    return seed
+
+
+def rand(shape, dtype=float32, device="cpu", requires_grad=False, seed=None):
+    """Create a cpu or Meta tensor of fp32 uniforms in [0, 1).
+
+    Parameters
+    ----------
+    shape:
+        Tuple or list of non-negative ints.
+    dtype:
+        Only `mojodl.float32` is accepted.
+    device:
+        `"cpu"` (default) allocates storage through accounting and fills with
+        uniforms; `"meta"` allocates nothing and does not generate values.
+    requires_grad:
+        If True, the result is a leaf that tracks ops for `.backward()`
+        (PyTorch semantics). Default False.
+    seed:
+        Optional int in ``[0, 2**64)``. Same seed → bit-identical values.
+        ``None`` (default) draws a fresh 64-bit seed from ``os.urandom``.
+    """
+    dims, device_code = _validate_constructor_args("rand", shape, dtype, device)
+    seed_u = _validate_seed("rand", seed)
+    t = Tensor._from_core(
+        _call_engine(_engine.rand, tuple(dims), device_code, seed_u)
+    )
+    t._requires_grad = bool(requires_grad)
+    return t
+
+
+def randn(shape, dtype=float32, device="cpu", requires_grad=False, seed=None):
+    """Create a cpu or Meta tensor of fp32 standard normals.
+
+    Parameters
+    ----------
+    shape:
+        Tuple or list of non-negative ints.
+    dtype:
+        Only `mojodl.float32` is accepted.
+    device:
+        `"cpu"` (default) allocates storage through accounting and fills with
+        standard normals; `"meta"` allocates nothing and does not generate
+        values.
+    requires_grad:
+        If True, the result is a leaf that tracks ops for `.backward()`
+        (PyTorch semantics). Default False.
+    seed:
+        Optional int in ``[0, 2**64)``. Same seed → bit-identical values.
+        ``None`` (default) draws a fresh 64-bit seed from ``os.urandom``.
+    """
+    dims, device_code = _validate_constructor_args("randn", shape, dtype, device)
+    seed_u = _validate_seed("randn", seed)
+    t = Tensor._from_core(
+        _call_engine(_engine.randn, tuple(dims), device_code, seed_u)
+    )
     t._requires_grad = bool(requires_grad)
     return t
 
@@ -243,11 +366,24 @@ class Tensor:
         from . import autograd
 
         result = Tensor._from_core(
-            _call_engine(_engine.add, self._core, other._core)
+            _call_engine(_engine.broadcast_add, self._core, other._core)
         )
         return autograd.record_add(result, self, other)
 
     def __radd__(self, other):
+        return NotImplemented
+
+    def __sub__(self, other):
+        if not isinstance(other, Tensor):
+            return NotImplemented
+        from . import autograd
+
+        result = Tensor._from_core(
+            _call_engine(_engine.broadcast_sub, self._core, other._core)
+        )
+        return autograd.record_sub(result, self, other)
+
+    def __rsub__(self, other):
         return NotImplemented
 
     def __mul__(self, other):
@@ -256,11 +392,24 @@ class Tensor:
         from . import autograd
 
         result = Tensor._from_core(
-            _call_engine(_engine.mul, self._core, other._core)
+            _call_engine(_engine.broadcast_mul, self._core, other._core)
         )
         return autograd.record_mul(result, self, other)
 
     def __rmul__(self, other):
+        return NotImplemented
+
+    def __truediv__(self, other):
+        if not isinstance(other, Tensor):
+            return NotImplemented
+        from . import autograd
+
+        result = Tensor._from_core(
+            _call_engine(_engine.broadcast_div, self._core, other._core)
+        )
+        return autograd.record_div(result, self, other)
+
+    def __rtruediv__(self, other):
         return NotImplemented
 
     def __matmul__(self, other):
@@ -381,6 +530,10 @@ __all__ = [
     "Tensor",
     "float32",
     "empty",
+    "zeros",
+    "ones",
+    "rand",
+    "randn",
     "ShapeError",
     "DeviceError",
     "AutogradError",
