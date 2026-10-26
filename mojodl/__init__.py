@@ -647,3 +647,6 @@ __all__ = [
 from . import nn
 
 __all__.append("nn")
+
+StateDictError = nn.StateDictError
+__all__.append("StateDictError")

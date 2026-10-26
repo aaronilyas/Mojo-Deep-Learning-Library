@@ -10,9 +10,20 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
+from collections.abc import Mapping
 from typing import Iterator
 
+import numpy as np
+
 from . import Tensor, no_grad, ones, rand, zeros
+
+
+class StateDictError(ValueError):
+    """Raised when ``load_state_dict`` cannot apply a state mapping.
+
+    The message names every offending parameter (unexpected, missing,
+    non-float32-convertible, or shape-mismatched).
+    """
 
 
 class Parameter(Tensor):
@@ -235,21 +246,65 @@ class Module:
     def load_state_dict(self, state) -> None:
         """Import Parameter values from a name→array mapping.
 
-        For each name that exists on this Module, replaces that Parameter's
-        engine storage with a fresh float32 copy of the source value. The
-        Parameter object identity, ``requires_grad``, ``.grad``, and leaf
-        status are preserved; no autograd graph is recorded. Extra or missing
-        names are ignored in this slice.
+        Keys must match ``named_parameters()`` exactly. Validates all entries
+        (unexpected / missing names, float32 convertibility, shapes) before
+        modifying any Parameter; on failure raises one ``StateDictError``
+        naming every offender and allocates no engine storage. On success,
+        replaces each Parameter's engine storage with a fresh float32 copy
+        while preserving Parameter identity, ``requires_grad``, ``.grad``,
+        and leaf status (no autograd graph is recorded).
         """
-        params = dict(self.named_parameters())
-        for name, value in state.items():
-            param = params.get(name)
-            if param is None:
+        if not isinstance(state, Mapping):
+            raise TypeError(
+                f"load_state_dict(): state must be a Mapping, "
+                f"got {type(state).__name__}"
+            )
+
+        params = OrderedDict(self.named_parameters())
+        param_names = set(params)
+        state_names = set(state.keys())
+
+        problems: list[str] = []
+        unexpected = sorted(state_names - param_names)
+        missing = sorted(param_names - state_names)
+        if unexpected:
+            problems.append(
+                "Unexpected key(s): " + ", ".join(unexpected)
+            )
+        if missing:
+            problems.append("Missing key(s): " + ", ".join(missing))
+
+        # Validate overlapping names with NumPy only — no engine allocation
+        # until every check passes (atomic rejection).
+        converted: dict[str, np.ndarray] = {}
+        for name in sorted(param_names & state_names):
+            param = params[name]
+            value = state[name]
+            try:
+                arr = np.asarray(value, dtype=np.float32)
+            except (TypeError, ValueError):
+                problems.append(f"cannot convert {name} to float32")
                 continue
-            # Tensor() copies via np.asarray(..., dtype=float32) into accounted
-            # storage. Swap _core only so identity / grad / leafness stay put.
+            if arr.dtype == object:
+                problems.append(f"cannot convert {name} to float32")
+                continue
+            if tuple(arr.shape) != tuple(param.shape):
+                problems.append(
+                    f"size mismatch for {name}: "
+                    f"expected {tuple(param.shape)}, got {tuple(arr.shape)}"
+                )
+                continue
+            converted[name] = arr
+
+        if problems:
+            raise StateDictError(
+                "Error(s) in loading state_dict:\n" + "\n".join(problems)
+            )
+
+        # Validation succeeded — copy into existing Parameter objects.
+        for name, param in params.items():
             with no_grad():
-                fresh = Tensor(value)
+                fresh = Tensor(converted[name])
             param._core = fresh._core
 
 
@@ -357,4 +412,11 @@ class Sequential(Module):
         return x
 
 
-__all__ = ["Parameter", "Module", "Linear", "ReLU", "Sequential"]
+__all__ = [
+    "Parameter",
+    "Module",
+    "Linear",
+    "ReLU",
+    "Sequential",
+    "StateDictError",
+]
