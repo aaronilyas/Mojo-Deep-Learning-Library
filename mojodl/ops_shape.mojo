@@ -1,13 +1,20 @@
-"""Shape ops: reshape as a zero-copy view (Reference and Meta).
+"""Shape ops: reshape (zero-copy view) and transpose (contiguous copy).
 
-Target validation and -1 inference are shared so cpu and Meta cannot diverge.
-Reshape never allocates; the result shares the input's storage (or Meta
+Reshape: target validation and -1 inference are shared so cpu and Meta cannot
+diverge. Never allocates; the result shares the input's storage (or Meta
 shape-only identity) and holds a strong reference to the storage owner.
+
+Transpose: dim normalization is shared (`_normalize_dim` from ops_reduce) so
+cpu and Meta cannot diverge. Cpu allocates a contiguous row-major result of
+the same byte size; Meta returns a Meta tensor with swapped shape and no
+allocation. dim0 == dim1 still returns a new tensor (copy).
 """
 
+from std.memory import unsafe_memcpy
 from std.python import PythonObject
-from tensor_core import Tensor, _row_major_strides, _format_shape
-from ops import _parse_shape
+from tensor_core import Tensor, _row_major_strides, _format_shape, _nbytes_for_shape
+from ops import _parse_shape, _alloc_fp32_out, _make_meta_result, _make_cpu_result
+from ops_reduce import _normalize_dim
 
 
 def _numel(shape: List[Int]) -> Int:
@@ -135,3 +142,91 @@ def reshape(a_obj: PythonObject, shape_obj: PythonObject) raises -> PythonObject
         owner^,
     )
     return PythonObject(alloc=view^)
+
+
+def _swapped_shape(shape: List[Int], d0: Int, d1: Int) -> List[Int]:
+    """Copy `shape` with axes `d0` and `d1` exchanged (no-op when equal)."""
+    var out = List[Int](capacity=len(shape))
+    for i in range(len(shape)):
+        out.append(shape[i])
+    if d0 != d1:
+        var tmp = out[d0]
+        out[d0] = out[d1]
+        out[d1] = tmp
+    return out^
+
+
+def _transpose_in_offset(
+    linear: Int,
+    out_strides: List[Int],
+    in_strides: List[Int],
+    d0: Int,
+    d1: Int,
+) -> Int:
+    """Map a row-major linear index in the transposed output to the input offset.
+
+    Out axis `d0` carries the data that lived on in axis `d1` (and vice versa).
+    """
+    var rem = linear
+    var off = 0
+    var ndim = len(out_strides)
+    for d in range(ndim):
+        var s = out_strides[d]
+        var coord: Int
+        if s == 0:
+            coord = 0
+        else:
+            coord = rem // s
+            rem = rem % s
+        var in_axis = d
+        if d == d0:
+            in_axis = d1
+        elif d == d1:
+            in_axis = d0
+        off += coord * in_strides[in_axis]
+    return off
+
+
+def transpose(
+    a_obj: PythonObject, dim0_obj: PythonObject, dim1_obj: PythonObject
+) raises -> PythonObject:
+    """Swap two axes: contiguous copy on cpu, shape-only on Meta.
+
+    Dims are normalized by `_normalize_dim` once up front (shared by Reference
+    and Meta). Cpu allocates exactly the input byte size through accounting
+    and writes a contiguous row-major result. dim0 == dim1 still returns a new
+    tensor (memcpy copy). Meta returns a Meta tensor with swapped shape and
+    no allocation.
+    """
+    var a = a_obj.downcast_value_ptr[Tensor]()
+    var dim0 = Int(py=dim0_obj)
+    var dim1 = Int(py=dim1_obj)
+
+    # Validate dims before any allocation (Meta and cpu share one check).
+    var rank = len(a[].shape)
+    var d0 = _normalize_dim(dim0, rank)
+    var d1 = _normalize_dim(dim1, rank)
+    var out_shape = _swapped_shape(a[].shape, d0, d1)
+    var out_strides = _row_major_strides(out_shape)
+    var nbytes = _nbytes_for_shape(out_shape)
+
+    if a[].device_code == 1:  # meta
+        return _make_meta_result(out_shape^, out_strides^)
+
+    var data = _alloc_fp32_out(nbytes)
+    if nbytes >= 1:
+        if d0 == d1:
+            unsafe_memcpy(
+                dest=data.value(), src=a[].data.value(), count=nbytes
+            )
+        else:
+            var a_f = a[].data.value().unsafe_bitcast[Float32]()
+            var o_f = data.value().unsafe_bitcast[Float32]()
+            var n = nbytes // 4
+            for i in range(n):
+                var in_idx = _transpose_in_offset(
+                    i, out_strides, a[].strides, d0, d1
+                )
+                o_f[unsafe_offset=i] = a_f[unsafe_offset=in_idx]
+
+    return _make_cpu_result(data^, nbytes, out_shape^, out_strides^)

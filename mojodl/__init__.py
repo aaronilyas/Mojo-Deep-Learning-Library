@@ -511,6 +511,22 @@ class Tensor:
         )
         return autograd.record_reshape(result, self)
 
+    def transpose(self, dim0, dim1):
+        """Return a contiguous tensor with axes ``dim0`` and ``dim1`` swapped.
+
+        Bool or non-int dims raise ``TypeError``. Out-of-range dims raise
+        ``AxisError``. Always allocates a new contiguous result (even when
+        ``dim0 == dim1``).
+        """
+        from . import autograd
+
+        dim0 = _require_int_dim(dim0, "transpose")
+        dim1 = _require_int_dim(dim1, "transpose")
+        result = Tensor._from_core(
+            _call_engine(_engine.transpose, self._core, dim0, dim1)
+        )
+        return autograd.record_transpose(result, self, dim0, dim1)
+
     def relu(self):
         """Elementwise ReLU: max(0, x)."""
         from . import autograd

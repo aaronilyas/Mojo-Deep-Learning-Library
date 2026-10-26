@@ -244,6 +244,31 @@ class ReshapeBackward(Node):
         return [(self.next_functions[0], grad_input)]
 
 
+class TransposeBackward(Node):
+    """Transpose: grad_input is grad_output transposed with the same dims.
+
+    Saves no tensors — only dim0 and dim1. Uses the same engine transpose
+    op, so Meta backward allocates nothing.
+    """
+
+    __slots__ = ("next_functions", "dim0", "dim1")
+
+    def __init__(self, input_node: Node, dim0: int, dim1: int):
+        self.next_functions = (input_node,)
+        self.dim0 = dim0
+        self.dim1 = dim1
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        grad_input = _wrap(
+            _call_engine(
+                _engine.transpose, grad_output._core, self.dim0, self.dim1
+            )
+        )
+        return [(self.next_functions[0], grad_input)]
+
+
 class AddBackward(Node):
     """Elementwise add: route the incoming gradient to each requiring input.
 
@@ -534,6 +559,16 @@ def record_reshape(result: Tensor, inp: Tensor) -> Tensor:
     if nxt is None:
         return result
     return attach(result, ReshapeBackward(nxt, inp.shape))
+
+
+def record_transpose(
+    result: Tensor, inp: Tensor, dim0: int, dim1: int
+) -> Tensor:
+    """Attach a TransposeBackward node when `inp` requires grad."""
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    return attach(result, TransposeBackward(nxt, dim0, dim1))
 
 
 def record_sum(result: Tensor, inp: Tensor, dim=None, keepdim: bool = False) -> Tensor:

@@ -16,7 +16,7 @@ from accounting import (
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
 from ops_reduce import sum_dim, sum_backward, mean_dim, mean_backward
-from ops_shape import reshape
+from ops_shape import reshape, transpose
 from ops_linalg import matmul, matmul_nt, matmul_tn
 from ops_activation import (
     relu,
@@ -111,6 +111,10 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[reshape](
             "reshape",
             docstring="Zero-copy reshape view; Reference and Meta share validation.",
+        )
+        m.def_function[transpose](
+            "transpose",
+            docstring="Swap two axes into a contiguous tensor; Reference / Meta.",
         )
         m.def_function[matmul](
             "matmul",
