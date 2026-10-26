@@ -95,7 +95,14 @@ def _require_numpy_f32_buffer(
 
 @fieldwise_init
 struct Tensor(Movable, Writable):
-    """Eager fp32 tensor; Meta tensors hold shape/dtype only."""
+    """Eager fp32 tensor; Meta tensors hold shape/dtype only.
+
+    A tensor either owns its storage or is a view. Owners are constructed with
+    the 6-argument form (storage_owner is None) and free in `__deinit__`.
+    Views share the owner's data pointer and nbytes, hold a strong reference
+    to the owning engine object in `storage_owner`, and never free. A view of
+    a view references the original owner.
+    """
 
     var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
     var nbytes: Int
@@ -105,10 +112,35 @@ struct Tensor(Movable, Writable):
     var dtype_code: Int
     # 0 = cpu (has storage when nbytes > 0); 1 = meta (never has storage).
     var device_code: Int
+    # None when this tensor owns its storage; otherwise a strong reference to
+    # the engine Tensor PythonObject that owns the shared storage.
+    var storage_owner: PythonObject
+
+    def __init__(
+        out self,
+        var data: Optional[Pointer[UInt8, MutUntrackedOrigin]],
+        nbytes: Int,
+        var shape: List[Int],
+        var strides: List[Int],
+        dtype_code: Int,
+        device_code: Int,
+    ):
+        """Owns storage. Same 6-argument form used by ops.mojo helpers."""
+        self = Self(
+            data^,
+            nbytes,
+            shape^,
+            strides^,
+            dtype_code,
+            device_code,
+            PythonObject(),  # None — owns storage
+        )
 
     def __deinit__(deinit self):
-        # Free storage exactly once when the Python wrapper is collected.
-        # Meta tensors never allocate; destructors must not raise.
+        # Free storage exactly once when the owning Python wrapper is collected.
+        # Views never free; Meta tensors never allocate; destructors must not raise.
+        if self.storage_owner:
+            return
         if self.device_code == 1:  # meta: never allocated
             return
         if self.nbytes < 1:

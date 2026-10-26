@@ -16,6 +16,7 @@ from accounting import (
 from tensor_core import Tensor, empty
 from ops import add, mul, sum, ones, expand_scalar, add_inplace, clone
 from ops_reduce import sum_dim, sum_backward, mean_dim, mean_backward
+from ops_shape import reshape
 
 
 @export
@@ -85,6 +86,10 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[mean_backward](
             "mean_backward",
             docstring="Broadcast mean upstream gradient times 1/count to input shape.",
+        )
+        m.def_function[reshape](
+            "reshape",
+            docstring="Zero-copy reshape view; Reference and Meta share validation.",
         )
 
         var mod = m.finalize()

@@ -222,6 +222,28 @@ class MeanBackward(SumBackward):
         )
 
 
+class ReshapeBackward(Node):
+    """Reshape: grad_input is grad_output reshaped to the input shape.
+
+    Saves no tensors — only the input shape. Uses the same engine reshape
+    view op, so Meta backward allocates nothing.
+    """
+
+    __slots__ = ("next_functions", "input_shape")
+
+    def __init__(self, input_node: Node, input_shape: tuple):
+        self.next_functions = (input_node,)
+        self.input_shape = input_shape
+
+    def apply(self, grad_output: Tensor) -> list[tuple[Node, Tensor]]:
+        from . import _engine
+
+        grad_input = _wrap(
+            _call_engine(_engine.reshape, grad_output._core, self.input_shape)
+        )
+        return [(self.next_functions[0], grad_input)]
+
+
 class AddBackward(Node):
     """Elementwise add: route the incoming gradient to each requiring input.
 
@@ -310,6 +332,14 @@ def attach(result: Tensor, grad_fn: Node | None) -> Tensor:
     result._requires_grad = True
     result._grad_fn = grad_fn
     return result
+
+
+def record_reshape(result: Tensor, inp: Tensor) -> Tensor:
+    """Attach a ReshapeBackward node when `inp` requires grad."""
+    nxt = input_node(inp)
+    if nxt is None:
+        return result
+    return attach(result, ReshapeBackward(nxt, inp.shape))
 
 
 def record_sum(result: Tensor, inp: Tensor, dim=None, keepdim: bool = False) -> Tensor:

@@ -305,6 +305,32 @@ class Tensor:
         )
         return autograd.record_mean(result, self, dim=dim, keepdim=bool(keepdim))
 
+    def reshape(self, *shape):
+        """Return a zero-copy view with a new shape (one ``-1`` may be inferred).
+
+        Accepts varargs ints or a single tuple/list. Bool or non-int dims raise
+        ``TypeError``. Element-count and ``-1`` rules raise ``ShapeError``.
+        """
+        from . import autograd
+
+        if len(shape) == 0:
+            raise TypeError("reshape() needs a shape")
+        if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
+            dims = shape[0]
+        else:
+            dims = shape
+        parsed = []
+        for i, d in enumerate(dims):
+            if isinstance(d, bool) or not isinstance(d, int):
+                raise TypeError(
+                    f"reshape(): shape[{i}] must be an int, got {type(d).__name__}"
+                )
+            parsed.append(d)
+        result = Tensor._from_core(
+            _call_engine(_engine.reshape, self._core, tuple(parsed))
+        )
+        return autograd.record_reshape(result, self)
+
     def backward(self, retain_graph: bool = False) -> None:
         """Compute gradients of this tensor w.r.t. leaves that require grad.
 
