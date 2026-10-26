@@ -79,6 +79,38 @@ _DEVICE_CPU = 0
 _DEVICE_META = 1
 
 
+def _validate_constructor_args(name, shape, dtype, device):
+    """Shared validation for empty / zeros / ones. Returns (dims, device_code)."""
+    if dtype is not float32 and dtype != float32:
+        raise TypeError(
+            f"{name}(): only mojodl.float32 is supported, got {dtype!r}"
+        )
+    if device == "cpu":
+        device_code = _DEVICE_CPU
+    elif device == "meta":
+        device_code = _DEVICE_META
+    else:
+        raise ValueError(
+            f"{name}(): unknown device {device!r}; expected 'cpu' or 'meta'"
+        )
+    if not isinstance(shape, (tuple, list)):
+        raise TypeError(
+            f"{name}(): shape must be a tuple or list of ints, got {type(shape).__name__}"
+        )
+    dims = []
+    for i, d in enumerate(shape):
+        if isinstance(d, bool) or not isinstance(d, int):
+            raise TypeError(
+                f"{name}(): shape[{i}] must be an int, got {type(d).__name__}"
+            )
+        if d < 0:
+            raise ValueError(
+                f"{name}(): shape[{i}] must be non-negative, got {d}"
+            )
+        dims.append(d)
+    return dims, device_code
+
+
 def empty(shape, dtype=float32, device="cpu", requires_grad=False):
     """Create an uninitialized cpu tensor or a Meta tensor (shape + dtype only).
 
@@ -95,34 +127,52 @@ def empty(shape, dtype=float32, device="cpu", requires_grad=False):
         If True, the result is a leaf that tracks ops for `.backward()`
         (PyTorch semantics). Default False.
     """
-    if dtype is not float32 and dtype != float32:
-        raise TypeError(
-            f"empty(): only mojodl.float32 is supported, got {dtype!r}"
-        )
-    if device == "cpu":
-        device_code = _DEVICE_CPU
-    elif device == "meta":
-        device_code = _DEVICE_META
-    else:
-        raise ValueError(
-            f"empty(): unknown device {device!r}; expected 'cpu' or 'meta'"
-        )
-    if not isinstance(shape, (tuple, list)):
-        raise TypeError(
-            f"empty(): shape must be a tuple or list of ints, got {type(shape).__name__}"
-        )
-    dims = []
-    for i, d in enumerate(shape):
-        if isinstance(d, bool) or not isinstance(d, int):
-            raise TypeError(
-                f"empty(): shape[{i}] must be an int, got {type(d).__name__}"
-            )
-        if d < 0:
-            raise ValueError(
-                f"empty(): shape[{i}] must be non-negative, got {d}"
-            )
-        dims.append(d)
+    dims, device_code = _validate_constructor_args("empty", shape, dtype, device)
     t = Tensor._from_core(_call_engine(_engine.empty, tuple(dims), device_code))
+    t._requires_grad = bool(requires_grad)
+    return t
+
+
+def zeros(shape, dtype=float32, device="cpu", requires_grad=False):
+    """Create a cpu or Meta tensor filled with 0.0.
+
+    Parameters
+    ----------
+    shape:
+        Tuple or list of non-negative ints.
+    dtype:
+        Only `mojodl.float32` is accepted.
+    device:
+        `"cpu"` (default) allocates storage through accounting and fills with
+        0.0; `"meta"` allocates nothing.
+    requires_grad:
+        If True, the result is a leaf that tracks ops for `.backward()`
+        (PyTorch semantics). Default False.
+    """
+    dims, device_code = _validate_constructor_args("zeros", shape, dtype, device)
+    t = Tensor._from_core(_call_engine(_engine.zeros, tuple(dims), device_code))
+    t._requires_grad = bool(requires_grad)
+    return t
+
+
+def ones(shape, dtype=float32, device="cpu", requires_grad=False):
+    """Create a cpu or Meta tensor filled with 1.0.
+
+    Parameters
+    ----------
+    shape:
+        Tuple or list of non-negative ints.
+    dtype:
+        Only `mojodl.float32` is accepted.
+    device:
+        `"cpu"` (default) allocates storage through accounting and fills with
+        1.0; `"meta"` allocates nothing.
+    requires_grad:
+        If True, the result is a leaf that tracks ops for `.backward()`
+        (PyTorch semantics). Default False.
+    """
+    dims, device_code = _validate_constructor_args("ones", shape, dtype, device)
+    t = Tensor._from_core(_call_engine(_engine.ones, tuple(dims), device_code))
     t._requires_grad = bool(requires_grad)
     return t
 
@@ -312,6 +362,8 @@ __all__ = [
     "Tensor",
     "float32",
     "empty",
+    "zeros",
+    "ones",
     "ShapeError",
     "DeviceError",
     "AutogradError",

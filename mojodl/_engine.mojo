@@ -23,6 +23,7 @@ from ops_elementwise import (
     neg,
     reduce_to_shape,
 )
+from ops_constructors import zeros
 
 
 @export
@@ -100,6 +101,10 @@ def PyInit__engine() abi("C") -> PythonObject:
         m.def_function[reduce_to_shape](
             "reduce_to_shape",
             docstring="Reduce a gradient to a target shape (broadcasting backward).",
+        )
+        m.def_function[zeros](
+            "zeros",
+            docstring="Create a zeros-filled cpu Tensor or a Meta tensor.",
         )
 
         var mod = m.finalize()
