@@ -98,10 +98,11 @@ struct Tensor(Movable, Writable):
     """Eager fp32 tensor; Meta tensors hold shape/dtype only.
 
     A tensor either owns its storage or is a view. Owners are constructed with
-    the 6-argument form (storage_owner is None) and free in `__deinit__`.
-    Views share the owner's data pointer and nbytes, hold a strong reference
-    to the owning engine object in `storage_owner`, and never free. A view of
-    a view references the original owner.
+    the 6-argument form (`is_view` False) and free in `__deinit__`. Views share
+    the owner's data pointer and nbytes, hold a strong reference to the owning
+    engine object in `storage_owner`, set `is_view` True, and never free. A view
+    of a view references the original owner. Ownership decisions use the Bool
+    field only — never Python truthiness on `storage_owner`.
     """
 
     var data: Optional[Pointer[UInt8, MutUntrackedOrigin]]
@@ -112,8 +113,10 @@ struct Tensor(Movable, Writable):
     var dtype_code: Int
     # 0 = cpu (has storage when nbytes > 0); 1 = meta (never has storage).
     var device_code: Int
-    # None when this tensor owns its storage; otherwise a strong reference to
-    # the engine Tensor PythonObject that owns the shared storage.
+    # False for storage owners (6-argument constructor); True for every view.
+    var is_view: Bool
+    # Unused when is_view is False; otherwise a strong reference to the engine
+    # Tensor PythonObject that owns the shared storage.
     var storage_owner: PythonObject
 
     def __init__(
@@ -133,13 +136,15 @@ struct Tensor(Movable, Writable):
             strides^,
             dtype_code,
             device_code,
-            PythonObject(),  # None — owns storage
+            False,  # is_view — owns storage
+            PythonObject(),  # storage_owner unused for owners
         )
 
     def __deinit__(deinit self):
         # Free storage exactly once when the owning Python wrapper is collected.
         # Views never free; Meta tensors never allocate; destructors must not raise.
-        if self.storage_owner:
+        # Branch on the Mojo Bool only — never PyObject_IsTrue on storage_owner.
+        if self.is_view:
             return
         if self.device_code == 1:  # meta: never allocated
             return

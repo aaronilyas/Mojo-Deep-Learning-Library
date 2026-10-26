@@ -110,8 +110,9 @@ def reshape(a_obj: PythonObject, shape_obj: PythonObject) raises -> PythonObject
     var out_strides = _row_major_strides(out_shape)
 
     # View of a view references the original owner; otherwise this tensor owns.
+    # Branch on the Mojo Bool only — never Python truthiness on storage_owner.
     var owner: PythonObject
-    if a[].storage_owner:
+    if a[].is_view:
         owner = PythonObject(copy=a[].storage_owner)
     else:
         owner = PythonObject(copy=a_obj)
@@ -130,6 +131,7 @@ def reshape(a_obj: PythonObject, shape_obj: PythonObject) raises -> PythonObject
         out_strides^,
         a[].dtype_code,
         a[].device_code,
+        True,  # is_view
         owner^,
     )
     return PythonObject(alloc=view^)
